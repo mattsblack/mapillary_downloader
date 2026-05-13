@@ -3,10 +3,12 @@
 import gzip
 import json
 import logging
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from importlib.metadata import version
+
+from mapillary_downloader.collection import CollectionId
+from mapillary_downloader import paths
 
 logger = logging.getLogger("mapillary_downloader")
 
@@ -21,11 +23,14 @@ def parse_collection_info(name):
     Returns:
         dict with keys "username", "quality", "is_webp", or None if parsing fails.
     """
-    basename = Path(name).name
-    match = re.match(r"mapillary-(.+)-(256|1024|2048|original)(?:-webp)?$", basename)
-    if match:
-        return {"username": match.group(1), "quality": match.group(2), "is_webp": "-webp" in basename}
-    return None
+    collection_id = CollectionId.parse(name)
+    if not collection_id:
+        return None
+    return {
+        "username": collection_id.username,
+        "quality": collection_id.quality,
+        "is_webp": collection_id.is_webp,
+    }
 
 
 def get_date_range(metadata_file):
@@ -121,7 +126,7 @@ def generate_ia_metadata(collection_dir):
     username = info["username"]
     quality = info["quality"]
 
-    metadata_file = collection_dir / "metadata.jsonl.gz"
+    metadata_file = collection_dir / paths.METADATA_JSONL_GZ
     if not metadata_file.exists():
         logger.error(f"metadata.jsonl.gz not found in {collection_dir}")
         return False

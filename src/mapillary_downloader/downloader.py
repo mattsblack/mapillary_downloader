@@ -1,6 +1,5 @@
 """Main downloader logic."""
 
-import gzip
 import json
 import logging
 import re
@@ -9,14 +8,14 @@ import threading
 import time
 from pathlib import Path
 import requests
-from PIL import Image
+from mapillary_downloader import paths
+from mapillary_downloader.collection import CollectionId, CollectionPaths
+from mapillary_downloader.finalizer import finalize_collection
 from mapillary_downloader.utils import format_size, format_time, get_cache_dir, safe_json_save
-from mapillary_downloader.ia_meta import generate_ia_metadata
 from mapillary_downloader.ia_check import check_ia_exists
 from mapillary_downloader.worker import worker_process
 from mapillary_downloader.worker_pool import AdaptiveWorkerPool
 from mapillary_downloader.metadata_reader import MetadataReader
-from mapillary_downloader.tar_sequences import tar_sequence_directories
 from mapillary_downloader.logging_config import add_file_handler
 
 logger = logging.getLogger("mapillary_downloader")
@@ -35,7 +34,7 @@ def clean_log_only_dirs():
         if not contents:
             continue
 
-        if all(f.name.startswith("download.log.") for f in contents):
+        if all(f.name.startswith(paths.LOG_FILE_PREFIX) for f in contents):
             log_count = len(contents)
             shutil.rmtree(path)
             logger.info("Removed %s (%d log files)", path.name, log_count)
@@ -82,23 +81,21 @@ class MapillaryDownloader:
         self.convert_webp = convert_webp
         self.check_ia = check_ia
 
-        # Determine collection name
         if username and quality:
-            collection_name = f"mapillary-{username}-{quality}"
-            if convert_webp:
-                collection_name += "-webp"
-            self.collection_name = collection_name
+            self.collection_id = CollectionId(username=username, quality=quality, is_webp=convert_webp)
+            self.collection_name = self.collection_id.name
         else:
+            self.collection_id = None
             self.collection_name = None
 
-        # Set up staging directory in cache
         cache_dir = get_cache_dir()
-        if self.collection_name:
-            self.staging_dir = cache_dir / self.collection_name
-            self.final_dir = self.base_output_dir / self.collection_name
+        if self.collection_id:
+            self.paths = CollectionPaths.for_collection(self.base_output_dir, self.collection_id, cache_dir)
         else:
-            self.staging_dir = cache_dir / "download"
-            self.final_dir = self.base_output_dir
+            self.paths = CollectionPaths.anonymous(self.base_output_dir, cache_dir)
+
+        self.staging_dir = self.paths.staging_dir
+        self.final_dir = self.paths.final_dir
 
         # Work in staging directory during download
         self.output_dir = self.staging_dir
@@ -109,13 +106,13 @@ class MapillaryDownloader:
 
         # Set up file logging for archival with timestamp for incremental runs
         timestamp = time.strftime("%Y%m%d-%H%M%S")
-        log_file = self.output_dir / f"download.log.{timestamp}"
+        log_file = self.output_dir / f"{paths.LOG_FILE_PREFIX}{timestamp}"
         self.file_handler = add_file_handler(log_file)
         logger.info(f"Logging to: {log_file}")
 
-        self.metadata_file = self.output_dir / "metadata.jsonl"
-        self.progress_file = self.output_dir / "progress.json"
-        self.cursor_file = self.output_dir / ".api_cursor"
+        self.metadata_file = self.paths.metadata_file
+        self.progress_file = self.paths.progress_file
+        self.cursor_file = self.paths.cursor_file
         self.downloaded = self._load_progress()
         self.baseline_bytes = self._baseline_bytes()
         self._last_save_time = time.time()
@@ -161,19 +158,6 @@ class MapillaryDownloader:
         progress[str(self.quality)] = list(self.downloaded)
 
         safe_json_save(self.progress_file, progress)
-
-    def _create_thumbnail(self):
-        """Create a 256x256 JPEG thumbnail at the collection root for IA."""
-        dest = self.output_dir / "__ia_thumb__.jpg"
-        ext = ".webp" if self.convert_webp else ".jpg"
-        for path in self.output_dir.rglob(f"*{ext}"):
-            with Image.open(path) as img:
-                img = img.convert("RGB")
-                img.thumbnail((256, 256))
-                img.save(dest, "JPEG")
-            logger.info("Thumbnail: %s", dest.name)
-            return
-        logger.warning("No images found for thumbnail")
 
     def _submit_metadata_batch(self, file_handle, quality_field, pool, process_results, base_submitted):
         """Read metadata lines from current position, submit to workers.
@@ -467,45 +451,10 @@ class MapillaryDownloader:
             self._close_file_handler()
             return
 
-        # Copy one image to root as thumbnail for IA
-        self._create_thumbnail()
-
-        # Tar sequence directories for efficient IA uploads
-        if self.tar_sequences:
-            tar_sequence_directories(self.output_dir)
-
-        # Gzip metadata.jsonl to save space
-        if self.metadata_file.exists():
-            original_size = self.metadata_file.stat().st_size
-            if original_size > 0:
-                logger.info("Compressing metadata.jsonl...")
-                gzipped_file = self.metadata_file.with_suffix(".jsonl.gz")
-
-                with open(self.metadata_file, "rb") as f_in:
-                    with gzip.open(gzipped_file, "wb", compresslevel=9) as f_out:
-                        shutil.copyfileobj(f_in, f_out)
-
-                compressed_size = gzipped_file.stat().st_size
-                self.metadata_file.unlink()
-
-                savings = 100 * (1 - compressed_size / original_size)
-                logger.info(
-                    f"Compressed metadata: {format_size(original_size)} → {format_size(compressed_size)} "
-                    f"({savings:.1f}% savings)"
-                )
-
-        # Generate IA metadata
-        generate_ia_metadata(self.output_dir)
-
-        # Close log file handler before moving directory
-        self._close_file_handler()
-
-        # Move from staging to final destination
-        logger.info("Moving to final destination...")
-        if self.final_dir.exists():
-            logger.warning(f"Destination already exists, removing: {self.final_dir}")
-            shutil.rmtree(self.final_dir)
-
-        self.final_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(self.staging_dir), str(self.final_dir))
-        logger.info(f"Done: {self.final_dir}")
+        finalize_collection(
+            self.output_dir,
+            self.final_dir,
+            convert_webp=self.convert_webp,
+            tar_sequences=self.tar_sequences,
+            before_move=self._close_file_handler,
+        )

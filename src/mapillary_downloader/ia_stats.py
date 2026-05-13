@@ -4,12 +4,13 @@ import json
 import logging
 import re
 import requests
+from mapillary_downloader import paths
 from mapillary_downloader.ia_meta import parse_collection_info
-from mapillary_downloader.utils import safe_json_save, http_get_with_retry, format_size, get_cache_dir
+from mapillary_downloader.utils import safe_json_save, http_get_with_retry, format_size
 
 logger = logging.getLogger("mapillary_downloader")
 
-CACHE_FILE = get_cache_dir() / ".stats.json"
+CACHE_FILE = paths.cache_file(paths.STATS_CACHE_JSON)
 
 
 def search_ia_collections(session):

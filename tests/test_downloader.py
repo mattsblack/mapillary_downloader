@@ -1,8 +1,17 @@
 """Tests for the downloader."""
 
 import json
+import shutil
 from unittest.mock import Mock, patch
 from mapillary_downloader.downloader import MapillaryDownloader
+
+
+def fake_finalize_collection(staging_dir, final_dir, *, convert_webp, tar_sequences, before_move=None):
+    """Fast finalizer test double that preserves the staging-to-final contract."""
+    if before_move:
+        before_move()
+    final_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(staging_dir), str(final_dir))
 
 
 class FakeWorkerPool:
@@ -123,8 +132,7 @@ def test_download_user_data_submits_metadata_to_worker_pool(tmp_path):
     with (
         patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"),
         patch("mapillary_downloader.downloader.AdaptiveWorkerPool", FakeWorkerPool),
-        patch.object(MapillaryDownloader, "_create_thumbnail"),
-        patch("mapillary_downloader.downloader.generate_ia_metadata", return_value=True),
+        patch("mapillary_downloader.downloader.finalize_collection", side_effect=fake_finalize_collection),
     ):
         downloader = MapillaryDownloader(
             mock_client,
@@ -175,8 +183,7 @@ def test_download_user_data_skips_completed_progress_entries(tmp_path):
     with (
         patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"),
         patch("mapillary_downloader.downloader.AdaptiveWorkerPool", FakeWorkerPool),
-        patch.object(MapillaryDownloader, "_create_thumbnail"),
-        patch("mapillary_downloader.downloader.generate_ia_metadata", return_value=True),
+        patch("mapillary_downloader.downloader.finalize_collection", side_effect=fake_finalize_collection),
     ):
         downloader = MapillaryDownloader(
             mock_client,

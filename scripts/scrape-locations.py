@@ -19,6 +19,7 @@ import logging
 import sys
 import time
 
+from mapillary_downloader import paths
 from mapillary_downloader.client_web import call_with_retry, location_search
 from mapillary_downloader.utils import get_cache_dir, safe_json_save
 
@@ -28,8 +29,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-LOCATIONS_TSV = get_cache_dir() / "locations.tsv"
-OUTPUT_FILE = get_cache_dir() / "locations.json"
+LOCATIONS_TSV = get_cache_dir() / paths.LOCATIONS_TSV
+OUTPUT_FILE = get_cache_dir() / paths.LOCATIONS_JSON
 DELAY = 0.2
 
 

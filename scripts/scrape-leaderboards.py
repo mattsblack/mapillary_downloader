@@ -11,6 +11,7 @@ import logging
 import sys
 import time
 
+from mapillary_downloader import paths
 from mapillary_downloader.client_web import call_with_retry, get_leaderboard
 from mapillary_downloader.utils import get_cache_dir, safe_json_save
 
@@ -20,8 +21,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-OUTPUT_FILE = get_cache_dir() / "leaderboards.json"
-LOCATIONS_FILE = get_cache_dir() / "locations.json"
+OUTPUT_FILE = get_cache_dir() / paths.LEADERBOARDS_JSON
+LOCATIONS_FILE = get_cache_dir() / paths.LOCATIONS_JSON
 DELAY = 0.2
 
 

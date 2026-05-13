@@ -5,17 +5,17 @@ import logging
 
 import requests
 
-from mapillary_downloader.utils import get_cache_dir
+from mapillary_downloader import paths
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 GEONAMES_URL = "https://github.com/geometalab/OSMNames/releases/download/v2.0/planet-latest_geonames.tsv.gz"
-GEONAMES_FILE = "planet-latest_geonames.tsv.gz"
+GEONAMES_FILE = paths.GEONAMES_TSV_GZ
 
 
 def download_geonames():
-    path = get_cache_dir() / GEONAMES_FILE
+    path = paths.cache_file(GEONAMES_FILE)
     if path.exists():
         logger.info("Already cached: %s", path)
         return path

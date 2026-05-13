@@ -14,6 +14,7 @@ import re
 import signal
 import sys
 
+from mapillary_downloader import paths
 from mapillary_downloader.ia_stats import get_archived_usernames
 from mapillary_downloader.utils import get_cache_dir
 
@@ -26,7 +27,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-leaderboards_file = get_cache_dir() / "leaderboards.json"
+leaderboards_file = get_cache_dir() / paths.LEADERBOARDS_JSON
 if not leaderboards_file.exists():
     print("No leaderboards.json found. Run scrape-leaderboards.py first.", file=sys.stderr)
     sys.exit(1)

@@ -14,13 +14,14 @@ import gzip
 import sys
 
 from mapillary_downloader.locations import get_variants
+from mapillary_downloader import paths
 from mapillary_downloader.utils import get_cache_dir
 
-GEONAMES_FILE = "planet-latest_geonames.tsv.gz"
+GEONAMES_FILE = paths.GEONAMES_TSV_GZ
 
 cache_dir = get_cache_dir()
 geonames_path = cache_dir / GEONAMES_FILE
-output_path = cache_dir / "locations.tsv"
+output_path = cache_dir / paths.LOCATIONS_TSV
 
 if not geonames_path.exists():
     print(f"Geonames file not found: {geonames_path}")

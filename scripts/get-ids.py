@@ -12,6 +12,7 @@ import json
 import re
 import signal
 
+from mapillary_downloader import paths
 from mapillary_downloader.utils import get_cache_dir
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -21,7 +22,7 @@ parser.add_argument("--pattern", default=".*", help="Regex pattern to match agai
 parser.add_argument("--type", default="city", help="Location type to filter (default: city)")
 args = parser.parse_args()
 
-data = json.load(open(get_cache_dir() / "locations.json"))
+data = json.load(open(get_cache_dir() / paths.LOCATIONS_JSON))
 pattern = re.compile(args.pattern)
 
 for loc_id, (loc_type, name) in sorted(data["locations"].items(), key=lambda x: x[1][1]):
