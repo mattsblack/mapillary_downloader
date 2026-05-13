@@ -37,6 +37,9 @@ mapillary-downloader --output ./downloads USERNAME1
 | `--bbox`        | `west,south,east,north`                      | `None`             |
 | `--no-webp`     | Don't convert to WebP                        | `False`            |
 | `--max-workers` | Maximum number of parallel download workers  | CPU count          |
+| `--max-size`    | Approximate output batch size, or `none`     | `900GB`            |
+| `--min-free-space` | Stop before disk fills, or `none`         | `50GB`             |
+| `--max-images`  | Approximate output batch image count         | `None`             |
 | `--no-tar`      | Don't tar bucket directories                 | `False`            |
 | `--no-check-ia` | Don't check if exists on Internet Archive    | `False`            |
 | `--debug`       | Enable verbose downloader logging            | `False`            |
@@ -98,6 +101,24 @@ By default, these date directories are automatically tarred after download
      you do too.
 
 To keep individual files instead of creating tars, use the `--no-tar` flag.
+
+## 🧱 Batch limits
+
+By default the downloader finalizes output in roughly 900GB batches:
+
+```
+mapillary-username-1024-webp/
+mapillary-username-1024-webp-2/
+mapillary-username-1024-webp-3/
+```
+
+The master resume state stays in the cache directory until the user download is
+complete, so finalized batches can be uploaded or moved away before rerunning.
+Chunks are resume-safe output batches, not chronological partitions.
+
+Use `--max-size none` to restore the old unbounded single-collection behavior.
+`--min-free-space` is an emergency guard: if free space falls below the limit,
+the downloader stops without finalizing the current payload.
 
 ## 🏛️ Internet Archive upload
 

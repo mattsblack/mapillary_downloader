@@ -3,6 +3,7 @@
 import gzip
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from importlib.metadata import version
@@ -26,10 +27,13 @@ def parse_collection_info(name):
     collection_id = CollectionId.parse(name)
     if not collection_id:
         return None
+    chunk_match = re.search(r"-(\d+)$", Path(name).name)
     return {
         "username": collection_id.username,
         "quality": collection_id.quality,
         "is_webp": collection_id.is_webp,
+        "chunk": int(chunk_match.group(1)) if chunk_match else 1,
+        "base_name": collection_id.name,
     }
 
 

@@ -27,17 +27,25 @@ class CollectionId:
         suffix = "-webp" if self.is_webp else ""
         return f"mapillary-{self.username}-{self.quality}{suffix}"
 
+    def chunk_name(self, chunk_number):
+        """Return the stable output name for a chunk number."""
+        if chunk_number == 1:
+            return self.name
+        return f"{self.name}-{chunk_number}"
+
     @classmethod
     def parse(cls, name):
         """Parse a collection identifier or path, returning None on mismatch."""
         basename = Path(name).name
-        match = re.match(rf"mapillary-(.+)-({QUALITY_PATTERN})(?:-webp)?$", basename)
+        match = re.match(rf"mapillary-(.+)-({QUALITY_PATTERN})(?P<webp>-webp)?(?:-\d+)?$", basename)
         if not match:
             return None
+        is_webp = bool(match.group("webp"))
+        username = match.group(1)
         return cls(
-            username=match.group(1),
+            username=username,
             quality=match.group(2),
-            is_webp=basename.endswith("-webp"),
+            is_webp=is_webp,
         )
 
 
@@ -80,3 +88,11 @@ class CollectionPaths:
     @property
     def cursor_file(self):
         return self.staging_dir / paths.API_CURSOR
+
+    @property
+    def chunks_file(self):
+        return self.staging_dir / paths.CHUNKS_JSON
+
+    @property
+    def payload_dir(self):
+        return self.staging_dir / paths.PAYLOAD_DIR

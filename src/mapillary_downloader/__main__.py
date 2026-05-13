@@ -8,6 +8,7 @@ from importlib.metadata import version
 from mapillary_downloader.client import MapillaryClient
 from mapillary_downloader.downloader import MapillaryDownloader, clean_log_only_dirs
 from mapillary_downloader.ia_stats import show_stats
+from mapillary_downloader.limits import DownloadLimits, parse_size
 from mapillary_downloader.logging_config import setup_logging
 from mapillary_downloader.webp_converter import check_cwebp_available
 
@@ -47,6 +48,21 @@ def main():
         type=int,
         default=os.cpu_count() or 8,
         help=f"Maximum number of parallel workers (default: CPU count = {os.cpu_count() or 8})",
+    )
+    parser.add_argument(
+        "--max-size",
+        default="900GB",
+        help="Approximate output batch size limit, or 'none' for old unbounded behavior (default: 900GB)",
+    )
+    parser.add_argument(
+        "--min-free-space",
+        default="50GB",
+        help="Stop without finalizing if free disk space drops below this, or 'none' to disable (default: 50GB)",
+    )
+    parser.add_argument(
+        "--max-images",
+        type=int,
+        help="Approximate output batch image limit (default: none)",
     )
     parser.add_argument(
         "--no-tar",
@@ -111,6 +127,16 @@ def main():
             logger.error("Error: bbox must be four comma-separated numbers")
             sys.exit(1)
 
+    try:
+        limits = DownloadLimits(
+            max_size_bytes=parse_size(args.max_size),
+            min_free_space_bytes=parse_size(args.min_free_space),
+            max_images=args.max_images,
+        )
+    except ValueError as e:
+        logger.error("Error: %s", e)
+        sys.exit(1)
+
     # WebP is enabled by default, disabled with --no-webp
     convert_webp = not args.no_webp
 
@@ -146,6 +172,7 @@ def main():
                     tar_sequences=not args.no_tar,
                     convert_webp=convert_webp,
                     check_ia=not args.no_check_ia,
+                    limits=limits,
                 )
                 downloader.download_user_data(bbox=bbox)
             except Exception as e:

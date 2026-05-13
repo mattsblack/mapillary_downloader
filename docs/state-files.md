@@ -12,6 +12,8 @@ path.
 - `metadata.jsonl.gz` - compressed metadata after finalization.
 - `progress.json` - per-quality downloaded image IDs.
 - `.api_cursor` - API pagination resume cursor.
+- `chunks.json` - chunked output manifest.
+- `payload/` - active image payload for capped/chunked runs.
 - `__ia_thumb__.jpg` - Internet Archive item thumbnail.
 - `download.log.{timestamp}` - per-run collection log.
 

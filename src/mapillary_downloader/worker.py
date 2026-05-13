@@ -60,7 +60,7 @@ def download_and_convert_image(image_data, output_dir, quality, convert_webp, se
         session: requests.Session with auth already configured
 
     Returns:
-        Tuple of (image_id, bytes_downloaded, success, error_msg)
+        Tuple of (image_id, bytes_downloaded, output_bytes, sequence_id, success, error_msg)
     """
     image_id = image_data["id"]
     quality_field = f"thumb_{quality}_url"
@@ -70,7 +70,7 @@ def download_and_convert_image(image_data, output_dir, quality, convert_webp, se
         # Get image URL
         image_url = image_data.get(quality_field)
         if not image_url:
-            return (image_id, 0, False, f"No {quality} URL")
+            return (image_id, 0, 0, None, False, f"No {quality} URL")
 
         # Determine final output directory - organize by capture date
         output_dir = Path(output_dir)
@@ -114,7 +114,7 @@ def download_and_convert_image(image_data, output_dir, quality, convert_webp, se
                     f.write(chunk)
                     bytes_downloaded += len(chunk)
         except Exception as e:
-            return (image_id, 0, False, f"Download failed: {e}")
+            return (image_id, 0, 0, sequence_id, False, f"Download failed: {e}")
 
         # Write EXIF metadata
         write_exif_to_image(jpg_path, image_data)
@@ -126,7 +126,7 @@ def download_and_convert_image(image_data, output_dir, quality, convert_webp, se
         if convert_webp:
             webp_path = convert_to_webp(jpg_path, output_path=final_path, delete_original=False)
             if not webp_path:
-                return (image_id, bytes_downloaded, False, "WebP conversion failed")
+                return (image_id, bytes_downloaded, 0, sequence_id, False, "WebP conversion failed")
 
         # Set file mtime to captured_at timestamp for reproducibility
         if "captured_at" in image_data:
@@ -134,10 +134,11 @@ def download_and_convert_image(image_data, output_dir, quality, convert_webp, se
             mtime = image_data["captured_at"] / 1000
             os.utime(final_path, (mtime, mtime))
 
-        return (image_id, bytes_downloaded, True, None)
+        output_bytes = final_path.stat().st_size if final_path.exists() else bytes_downloaded
+        return (image_id, bytes_downloaded, output_bytes, sequence_id, True, None)
 
     except Exception as e:
-        return (image_id, 0, False, str(e))
+        return (image_id, 0, 0, image_data.get("sequence"), False, str(e))
     finally:
         if temp_dir:
             shutil.rmtree(temp_dir, ignore_errors=True)

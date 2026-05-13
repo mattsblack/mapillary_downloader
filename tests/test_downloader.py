@@ -4,9 +4,10 @@ import json
 import shutil
 from unittest.mock import Mock, patch
 from mapillary_downloader.downloader import MapillaryDownloader
+from mapillary_downloader.limits import DownloadLimits
 
 
-def fake_finalize_collection(staging_dir, final_dir, *, convert_webp, tar_sequences, before_move=None):
+def fake_finalize_collection(staging_dir, final_dir, *, convert_webp, tar_sequences, before_move=None, **kwargs):
     """Fast finalizer test double that preserves the staging-to-final contract."""
     if before_move:
         before_move()
@@ -141,6 +142,7 @@ def test_download_user_data_submits_metadata_to_worker_pool(tmp_path):
             quality="original",
             tar_sequences=False,
             check_ia=False,
+            limits=DownloadLimits(max_size_bytes=None, min_free_space_bytes=None),
         )
 
         downloader.download_user_data()
@@ -192,6 +194,7 @@ def test_download_user_data_skips_completed_progress_entries(tmp_path):
             quality="original",
             tar_sequences=False,
             check_ia=False,
+            limits=DownloadLimits(max_size_bytes=None, min_free_space_bytes=None),
         )
 
         downloader.download_user_data()
@@ -213,6 +216,7 @@ def test_download_user_data_closes_file_handler_when_final_dir_exists(tmp_path):
             tmp_path / "output",
             username="testuser",
             quality="original",
+            limits=DownloadLimits(max_size_bytes=None, min_free_space_bytes=None),
         )
         downloader.download_user_data()
 
@@ -232,7 +236,91 @@ def test_download_user_data_closes_file_handler_when_ia_exists(tmp_path):
             tmp_path / "output",
             username="testuser",
             quality="original",
+            limits=DownloadLimits(max_size_bytes=None, min_free_space_bytes=None),
         )
         downloader.download_user_data()
 
     assert downloader.file_handler is None
+
+
+def test_chunked_download_uses_payload_dir_and_manifest(tmp_path):
+    """Chunked mode keeps state in cache and moves only payload to output chunk."""
+    FakeWorkerPool.instances = []
+    mock_client = Mock()
+    mock_client.access_token = "test-token"
+    mock_client.get_user_images.return_value = iter(
+        [
+            {
+                "id": "img1",
+                "captured_at": 1700000000000,
+                "sequence": "seq1",
+                "thumb_original_url": "http://example.com/img1.jpg",
+            },
+            {
+                "id": "img2",
+                "captured_at": 1700000001000,
+                "sequence": "seq2",
+                "thumb_original_url": "http://example.com/img2.jpg",
+            },
+        ]
+    )
+
+    with (
+        patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"),
+        patch("mapillary_downloader.downloader.AdaptiveWorkerPool", FakeWorkerPool),
+        patch("mapillary_downloader.downloader.finalize_collection", side_effect=fake_finalize_collection),
+    ):
+        downloader = MapillaryDownloader(
+            mock_client,
+            tmp_path / "output",
+            username="testuser",
+            quality="original",
+            tar_sequences=False,
+            check_ia=False,
+            limits=DownloadLimits(max_size_bytes=None, min_free_space_bytes=None, max_images=1),
+        )
+
+        downloader.download_user_data()
+
+    pool = FakeWorkerPool.instances[0]
+    assert pool.submitted[0][1] == str(downloader.staging_dir / "payload")
+    assert (tmp_path / "output" / "mapillary-testuser-original").exists()
+    assert (downloader.staging_dir / "chunks.json").exists()
+    assert downloader.output_dir.exists()
+
+
+def test_chunked_download_skips_existing_output_chunk(tmp_path):
+    """Chunked mode should not overwrite manually-created existing chunks."""
+    FakeWorkerPool.instances = []
+    mock_client = Mock()
+    mock_client.access_token = "test-token"
+    mock_client.get_user_images.return_value = iter(
+        [
+            {
+                "id": "img1",
+                "captured_at": 1700000000000,
+                "thumb_original_url": "http://example.com/img1.jpg",
+            }
+        ]
+    )
+    existing = tmp_path / "output" / "mapillary-testuser-original"
+    existing.mkdir(parents=True)
+
+    with (
+        patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"),
+        patch("mapillary_downloader.downloader.AdaptiveWorkerPool", FakeWorkerPool),
+        patch("mapillary_downloader.downloader.finalize_collection", side_effect=fake_finalize_collection),
+    ):
+        downloader = MapillaryDownloader(
+            mock_client,
+            tmp_path / "output",
+            username="testuser",
+            quality="original",
+            tar_sequences=False,
+            check_ia=False,
+            limits=DownloadLimits(max_size_bytes=1, min_free_space_bytes=None),
+        )
+        downloader.download_user_data()
+
+    assert existing.exists()
+    assert (tmp_path / "output" / "mapillary-testuser-original-2").exists()

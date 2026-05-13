@@ -13,6 +13,7 @@ def test_collection_id_parses_legacy_names_and_paths():
     collection_id = CollectionId.parse("/tmp/mapillary-user-with-dash-original-webp")
 
     assert collection_id == CollectionId("user-with-dash", "original", is_webp=True)
+    assert CollectionId.parse("mapillary-user-with-dash-original-webp-2") == collection_id
     assert CollectionId.parse("not-mapillary-user-original") is None
 
 

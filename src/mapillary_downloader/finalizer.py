@@ -55,15 +55,59 @@ def compress_metadata(collection_dir):
     )
 
 
-def finalize_collection(staging_dir, final_dir, *, convert_webp, tar_sequences, before_move=None):
+def write_simple_meta(collection_dir, title, description):
+    """Write minimal IA-style metadata tags without image-count phrasing."""
+    meta_dir = collection_dir / ".meta"
+    for tag, value in {"title": title, "description": description, "mediatype": "data"}.items():
+        tag_dir = meta_dir / tag
+        tag_dir.mkdir(parents=True, exist_ok=True)
+        (tag_dir / "0").write_text(str(value))
+
+
+def copy_master_state(state_dir, payload_dir):
+    """Copy master state files into a final payload collection."""
+    for name in (
+        paths.METADATA_JSONL,
+        paths.METADATA_JSONL_GZ,
+        paths.PROGRESS_JSON,
+        paths.API_CURSOR,
+        paths.CHUNKS_JSON,
+    ):
+        src = state_dir / name
+        if src.exists():
+            shutil.copy2(src, payload_dir / name)
+
+    for log_file in state_dir.glob(f"{paths.LOG_FILE_PREFIX}*"):
+        if log_file.is_file():
+            shutil.copy2(log_file, payload_dir / log_file.name)
+
+
+def finalize_collection(
+    staging_dir,
+    final_dir,
+    *,
+    convert_webp,
+    tar_sequences,
+    before_move=None,
+    state_dir=None,
+    include_master_state=True,
+    chunk_title=None,
+    chunk_description=None,
+):
     """Prepare a staged collection and move it to its final destination."""
+    if state_dir and include_master_state:
+        copy_master_state(state_dir, staging_dir)
+
     create_thumbnail(staging_dir, convert_webp)
 
     if tar_sequences:
         tar_sequence_directories(staging_dir)
 
-    compress_metadata(staging_dir)
-    generate_ia_metadata(staging_dir)
+    if include_master_state:
+        compress_metadata(staging_dir)
+        generate_ia_metadata(staging_dir)
+    elif chunk_title and chunk_description:
+        write_simple_meta(staging_dir, chunk_title, chunk_description)
 
     if before_move:
         before_move()

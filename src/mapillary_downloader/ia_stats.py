@@ -148,6 +148,8 @@ def update_cache(ia_collections):
             "quality": info["quality"],
             "username": info["username"],
             "is_webp": info["is_webp"],
+            "chunk": info["chunk"],
+            "base_name": info["base_name"],
             "ia_collection": ia_collection,
         }
 

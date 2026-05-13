@@ -13,6 +13,8 @@ METADATA_JSONL_GZ = "metadata.jsonl.gz"
 PROGRESS_JSON = "progress.json"
 API_CURSOR = ".api_cursor"
 IA_THUMBNAIL = "__ia_thumb__.jpg"
+CHUNKS_JSON = "chunks.json"
+PAYLOAD_DIR = "payload"
 
 STATS_CACHE_JSON = ".stats.json"
 GEONAMES_TSV_GZ = "planet-latest_geonames.tsv.gz"
