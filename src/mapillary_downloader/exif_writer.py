@@ -2,7 +2,7 @@
 
 import logging
 import piexif
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger("mapillary_downloader")
 
@@ -35,7 +35,7 @@ def timestamp_to_exif_datetime(timestamp):
     Returns:
         String in format "YYYY:MM:DD HH:MM:SS"
     """
-    dt = datetime.fromtimestamp(timestamp / 1000.0)
+    dt = datetime.fromtimestamp(timestamp / 1000.0, tz=timezone.utc)
     return dt.strftime("%Y:%m:%d %H:%M:%S")
 
 
@@ -87,6 +87,9 @@ def write_exif_to_image(image_path, metadata):
             exif_dict["Exif"][piexif.ExifIFD.DateTimeDigitized] = datetime_bytes
             exif_dict["Exif"][piexif.ExifIFD.SubSecTimeOriginal] = ("000" + str(metadata["captured_at"] % 1000))[-3:]
             exif_dict["Exif"][piexif.ExifIFD.SubSecTimeDigitized] = ("000" + str(metadata["captured_at"] % 1000))[-3:]
+            exif_dict["Exif"][piexif.ExifIFD.OffsetTime] = b"+00:00"
+            exif_dict["Exif"][piexif.ExifIFD.OffsetTimeOriginal] = b"+00:00"
+            exif_dict["Exif"][piexif.ExifIFD.OffsetTimeDigitized] = b"+00:00"
 
         # GPS data - prefer computed_geometry over geometry
         geometry = metadata.get("computed_geometry") or metadata.get("geometry")

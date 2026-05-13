@@ -120,6 +120,14 @@ class MapillaryDownloader:
         self.baseline_bytes = self._baseline_bytes()
         self._last_save_time = time.time()
 
+    def _close_file_handler(self):
+        """Close and detach this downloader's per-run file log handler."""
+        if self.file_handler is None:
+            return
+        self.file_handler.close()
+        logger.removeHandler(self.file_handler)
+        self.file_handler = None
+
     def _load_progress(self):
         """Load previously downloaded image IDs for this quality."""
         if self.progress_file.exists():
@@ -237,6 +245,7 @@ class MapillaryDownloader:
         # Check if collection already exists in final destination
         if self.final_dir.exists():
             logger.info(f"Collection already exists at {self.final_dir}, skipping download")
+            self._close_file_handler()
             return
 
         # Check if collection already exists on Internet Archive
@@ -244,6 +253,7 @@ class MapillaryDownloader:
             logger.info(f"Checking if {self.collection_name} exists on Internet Archive...")
             if check_ia_exists(requests.Session(), self.collection_name):
                 logger.info("Collection already exists on archive.org, skipping download")
+                self._close_file_handler()
                 return
 
         quality_field = f"thumb_{self.quality}_url"
@@ -383,6 +393,18 @@ class MapillaryDownloader:
                 time.sleep(0.1)
                 process_results()
 
+            # The API thread may have written its final lines after the last
+            # tail read but before it set the completion event.
+            if self.metadata_file.exists():
+                with open(self.metadata_file) as f:
+                    f.seek(last_position)
+                    batch_submitted, batch_skipped = self._submit_metadata_batch(
+                        f, quality_field, pool, process_results, submitted
+                    )
+                    submitted += batch_submitted
+                    skipped_count += batch_skipped
+                    last_position = f.tell()
+
             # Send shutdown signals
             logger.debug(f"Submitted {submitted:,} images, waiting for workers")
             for _ in range(pool.current_workers):
@@ -437,14 +459,12 @@ class MapillaryDownloader:
         # If API fetch failed or nothing was downloaded, leave staging dir for retry
         if api_fetch_error[0] is not None:
             logger.error("API fetch failed, leaving staging dir for retry: %s", self.staging_dir)
-            self.file_handler.close()
-            logger.removeHandler(self.file_handler)
+            self._close_file_handler()
             raise api_fetch_error[0]
 
         if downloaded_count == 0 and not self.downloaded:
             logger.warning("No images downloaded, leaving staging dir for retry: %s", self.staging_dir)
-            self.file_handler.close()
-            logger.removeHandler(self.file_handler)
+            self._close_file_handler()
             return
 
         # Copy one image to root as thumbnail for IA
@@ -478,8 +498,7 @@ class MapillaryDownloader:
         generate_ia_metadata(self.output_dir)
 
         # Close log file handler before moving directory
-        self.file_handler.close()
-        logger.removeHandler(self.file_handler)
+        self._close_file_handler()
 
         # Move from staging to final destination
         logger.info("Moving to final destination...")

@@ -30,13 +30,10 @@ def test_decimal_to_dms_negative():
 
 def test_timestamp_to_exif_datetime():
     """Test conversion of Unix timestamp to EXIF datetime format."""
-    # 2024-01-15 (time will vary by timezone)
     timestamp = 1705320645000  # in milliseconds
     result = timestamp_to_exif_datetime(timestamp)
 
-    # Check format and date
-    assert result.startswith("2024:01:15")
-    assert len(result) == 19  # "YYYY:MM:DD HH:MM:SS"
+    assert result == "2024:01:15 12:10:45"
 
 
 def test_write_exif_to_image_gps(tmp_path):
@@ -102,7 +99,10 @@ def test_write_exif_to_image_camera(tmp_path):
 
     # Check datetime
     assert piexif.ImageIFD.DateTime in exif_dict["0th"]
-    assert b"2024:01:15" in exif_dict["0th"][piexif.ImageIFD.DateTime]
+    assert exif_dict["0th"][piexif.ImageIFD.DateTime] == b"2024:01:15 12:10:45"
+    assert exif_dict["Exif"][piexif.ExifIFD.OffsetTime] == b"+00:00"
+    assert exif_dict["Exif"][piexif.ExifIFD.OffsetTimeOriginal] == b"+00:00"
+    assert exif_dict["Exif"][piexif.ExifIFD.OffsetTimeDigitized] == b"+00:00"
 
 
 def test_write_exif_to_image_compass(tmp_path):

@@ -192,3 +192,40 @@ def test_download_user_data_skips_completed_progress_entries(tmp_path):
     pool = FakeWorkerPool.instances[0]
     assert pool.submitted == []
     assert downloader.downloaded == {"img1"}
+
+
+def test_download_user_data_closes_file_handler_when_final_dir_exists(tmp_path):
+    """Skip paths should not leave per-user file log handlers attached."""
+    mock_client = Mock()
+    final_dir = tmp_path / "output" / "mapillary-testuser-original"
+    final_dir.mkdir(parents=True)
+
+    with patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"):
+        downloader = MapillaryDownloader(
+            mock_client,
+            tmp_path / "output",
+            username="testuser",
+            quality="original",
+        )
+        downloader.download_user_data()
+
+    assert downloader.file_handler is None
+
+
+def test_download_user_data_closes_file_handler_when_ia_exists(tmp_path):
+    """IA skip paths should not leave per-user file log handlers attached."""
+    mock_client = Mock()
+
+    with (
+        patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"),
+        patch("mapillary_downloader.downloader.check_ia_exists", return_value=True),
+    ):
+        downloader = MapillaryDownloader(
+            mock_client,
+            tmp_path / "output",
+            username="testuser",
+            quality="original",
+        )
+        downloader.download_user_data()
+
+    assert downloader.file_handler is None

@@ -4,7 +4,7 @@ import gzip
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from importlib.metadata import version
 
@@ -58,8 +58,8 @@ def get_date_range(metadata_file):
     first_ts = min(timestamps) / 1000
     last_ts = max(timestamps) / 1000
 
-    first_date = datetime.fromtimestamp(first_ts).strftime("%Y-%m-%d")
-    last_date = datetime.fromtimestamp(last_ts).strftime("%Y-%m-%d")
+    first_date = datetime.fromtimestamp(first_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+    last_date = datetime.fromtimestamp(last_ts, tz=timezone.utc).strftime("%Y-%m-%d")
 
     return first_date, last_date
 
