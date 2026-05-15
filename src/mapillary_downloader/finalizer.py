@@ -95,19 +95,26 @@ def finalize_collection(
     chunk_description=None,
 ):
     """Prepare a staged collection and move it to its final destination."""
-    if state_dir and include_master_state:
-        copy_master_state(state_dir, staging_dir)
+    work_dir = staging_dir
+    if staging_dir.name != final_dir.name:
+        work_dir = staging_dir.parent / final_dir.name
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+        shutil.move(str(staging_dir), str(work_dir))
 
-    create_thumbnail(staging_dir, convert_webp)
+    if state_dir and include_master_state:
+        copy_master_state(state_dir, work_dir)
+
+    create_thumbnail(work_dir, convert_webp)
 
     if tar_sequences:
-        tar_sequence_directories(staging_dir)
+        tar_sequence_directories(work_dir)
 
     if include_master_state:
-        compress_metadata(staging_dir)
-        generate_ia_metadata(staging_dir)
+        compress_metadata(work_dir)
+        generate_ia_metadata(work_dir)
     elif chunk_title and chunk_description:
-        write_simple_meta(staging_dir, chunk_title, chunk_description)
+        write_simple_meta(work_dir, chunk_title, chunk_description)
 
     if before_move:
         before_move()
@@ -118,5 +125,5 @@ def finalize_collection(
         shutil.rmtree(final_dir)
 
     final_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(staging_dir), str(final_dir))
+    shutil.move(str(work_dir), str(final_dir))
     logger.info(f"Done: {final_dir}")
