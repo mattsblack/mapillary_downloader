@@ -55,13 +55,31 @@ def compress_metadata(collection_dir):
     )
 
 
-def write_simple_meta(collection_dir, title, description):
-    """Write minimal IA-style metadata tags without image-count phrasing."""
+def write_meta_tag(meta_dir, tag, values):
+    """Write one IA-style metadata tag."""
+    tag_dir = meta_dir / tag
+    tag_dir.mkdir(parents=True, exist_ok=True)
+
+    if not isinstance(values, list):
+        values = [values]
+
+    for idx, value in enumerate(values):
+        (tag_dir / str(idx)).write_text(str(value))
+
+
+def write_simple_meta(collection_dir, title, description, *, username=None, source_url=None):
+    """Write IA-style metadata tags without image-count phrasing."""
     meta_dir = collection_dir / ".meta"
-    for tag, value in {"title": title, "description": description, "mediatype": "data"}.items():
-        tag_dir = meta_dir / tag
-        tag_dir.mkdir(parents=True, exist_ok=True)
-        (tag_dir / "0").write_text(str(value))
+    write_meta_tag(meta_dir, "title", title)
+    write_meta_tag(meta_dir, "description", description)
+    write_meta_tag(meta_dir, "subject", ["mapillary", "street-view", "computer-vision", "geospatial", "photography"])
+    if username:
+        write_meta_tag(meta_dir, "creator", username)
+    write_meta_tag(meta_dir, "licenseurl", "https://creativecommons.org/licenses/by-sa/4.0/")
+    write_meta_tag(meta_dir, "mediatype", "data")
+    write_meta_tag(meta_dir, "collection", "mapillary-images")
+    if source_url:
+        write_meta_tag(meta_dir, "source", source_url)
 
 
 def copy_master_state(state_dir, payload_dir):
@@ -93,13 +111,14 @@ def finalize_collection(
     include_master_state=True,
     chunk_title=None,
     chunk_description=None,
+    chunk_username=None,
 ):
     """Prepare a staged collection and move it to its final destination."""
     work_dir = staging_dir
     if staging_dir.name != final_dir.name:
         work_dir = staging_dir.parent / final_dir.name
         if work_dir.exists():
-            shutil.rmtree(work_dir)
+            raise FileExistsError(f"Finalization work directory already exists and needs repair: {work_dir}")
         shutil.move(str(staging_dir), str(work_dir))
 
     if state_dir and include_master_state:
@@ -114,15 +133,15 @@ def finalize_collection(
         compress_metadata(work_dir)
         generate_ia_metadata(work_dir)
     elif chunk_title and chunk_description:
-        write_simple_meta(work_dir, chunk_title, chunk_description)
+        source_url = f"https://www.mapillary.com/app/user/{chunk_username}" if chunk_username else None
+        write_simple_meta(work_dir, chunk_title, chunk_description, username=chunk_username, source_url=source_url)
 
     if before_move:
         before_move()
 
     logger.info("Moving to final destination...")
     if final_dir.exists():
-        logger.warning(f"Destination already exists, removing: {final_dir}")
-        shutil.rmtree(final_dir)
+        raise FileExistsError(f"Destination already exists: {final_dir}")
 
     final_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(work_dir), str(final_dir))

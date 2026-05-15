@@ -2,6 +2,7 @@
 
 import gzip
 import json
+import pytest
 
 from mapillary_downloader import paths
 from mapillary_downloader.finalizer import compress_metadata, finalize_collection
@@ -40,3 +41,40 @@ def test_finalize_chunk_payload_uses_final_name_for_metadata(tmp_path):
     assert final_dir.exists()
     assert (final_dir / ".meta" / "title" / "0").read_text() == "Mapillary images by testuser"
     assert not payload_dir.exists()
+
+
+def test_finalize_refuses_existing_partial_dir(tmp_path):
+    payload_dir = tmp_path / "cache" / "mapillary-testuser-original" / paths.PAYLOAD_DIR
+    payload_dir.mkdir(parents=True)
+    work_dir = payload_dir.parent / "mapillary-testuser-original-2"
+    work_dir.mkdir()
+
+    with pytest.raises(FileExistsError):
+        finalize_collection(
+            payload_dir,
+            tmp_path / "output" / "mapillary-testuser-original-2",
+            convert_webp=False,
+            tar_sequences=False,
+            include_master_state=False,
+        )
+
+
+def test_intermediate_chunk_metadata_has_archive_tags_without_count(tmp_path):
+    payload_dir = tmp_path / "cache" / "mapillary-testuser-original" / paths.PAYLOAD_DIR
+    payload_dir.mkdir(parents=True)
+    final_dir = tmp_path / "output" / "mapillary-testuser-original"
+
+    finalize_collection(
+        payload_dir,
+        final_dir,
+        convert_webp=False,
+        tar_sequences=False,
+        include_master_state=False,
+        chunk_title="Mapillary images by testuser (chunk)",
+        chunk_description="Intermediate chunk without aggregate count.",
+        chunk_username="testuser",
+    )
+
+    assert (final_dir / ".meta" / "collection" / "0").read_text() == "mapillary-images"
+    assert (final_dir / ".meta" / "creator" / "0").read_text() == "testuser"
+    assert "Contains " not in (final_dir / ".meta" / "description" / "0").read_text()

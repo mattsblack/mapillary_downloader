@@ -52,6 +52,14 @@ class ChunkManifest:
     def next_chunk(self):
         return int(self.data.get("next_chunk", 1))
 
+    @property
+    def is_complete(self):
+        return any(entry.get("final") for entry in self.data.get("completed", []))
+
+    @property
+    def finalizing(self):
+        return self.data.get("finalizing")
+
     def next_name(self):
         return self.collection_id.chunk_name(self.next_chunk)
 
@@ -60,6 +68,19 @@ class ChunkManifest:
 
     def advance(self):
         self.data["next_chunk"] = self.next_chunk + 1
+        self.save()
+
+    def mark_finalizing(self, name, images=0, bytes_count=0, final=False):
+        self.data["finalizing"] = {
+            "name": name,
+            "images": images,
+            "bytes": bytes_count,
+            "final": final,
+        }
+        self.save()
+
+    def clear_finalizing(self):
+        self.data.pop("finalizing", None)
         self.save()
 
     def mark_completed(self, name, images, bytes_count, final=False):
@@ -71,6 +92,7 @@ class ChunkManifest:
                 "final": final,
             }
         )
+        self.data.pop("finalizing", None)
         self.data["next_chunk"] = self.next_chunk + 1
         self.save()
 

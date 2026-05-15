@@ -3,6 +3,9 @@
 import json
 import shutil
 from unittest.mock import Mock, patch
+
+import pytest
+
 from mapillary_downloader.downloader import MapillaryDownloader
 from mapillary_downloader.limits import DownloadLimits
 
@@ -52,6 +55,22 @@ class FakeWorkerPool:
 
     def shutdown(self, timeout=2):
         self.shutdown_called = True
+
+
+class InterruptAfterResultWorkerPool(FakeWorkerPool):
+    """Worker pool that interrupts after one successful result is observed."""
+
+    def __init__(self, worker_func, max_workers=16, monitoring_interval=10):
+        super().__init__(worker_func, max_workers, monitoring_interval)
+        self.returned_result = False
+
+    def get_result(self, timeout=None):
+        if self.results:
+            self.returned_result = True
+            return self.results.pop(0)
+        if self.returned_result:
+            raise KeyboardInterrupt
+        return None
 
 
 def test_downloader_init(tmp_path):
@@ -161,6 +180,44 @@ def test_download_user_data_submits_metadata_to_worker_pool(tmp_path):
 
     assert "img1" in downloader.downloaded
     assert downloader.final_dir.exists()
+
+
+def test_download_user_data_saves_progress_on_interrupt(tmp_path):
+    """A Ctrl-C after successful downloads should not lose in-memory progress."""
+    FakeWorkerPool.instances = []
+    mock_client = Mock()
+    mock_client.access_token = "test-token"
+    mock_client.get_user_images.return_value = iter(
+        [
+            {
+                "id": "img1",
+                "captured_at": 1700000000000,
+                "thumb_original_url": "http://example.com/img1.jpg",
+            }
+        ]
+    )
+
+    with (
+        patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"),
+        patch("mapillary_downloader.downloader.AdaptiveWorkerPool", InterruptAfterResultWorkerPool),
+        patch("mapillary_downloader.downloader.finalize_collection", side_effect=fake_finalize_collection),
+    ):
+        downloader = MapillaryDownloader(
+            mock_client,
+            tmp_path / "output",
+            username="testuser",
+            quality="original",
+            tar_sequences=False,
+            check_ia=False,
+            limits=DownloadLimits(max_size_bytes=None, min_free_space_bytes=None),
+        )
+
+        with pytest.raises(KeyboardInterrupt):
+            downloader.download_user_data()
+
+    progress = json.loads((downloader.staging_dir / "progress.json").read_text())
+    assert progress["original"] == ["img1"]
+    assert InterruptAfterResultWorkerPool.instances[0].shutdown_called
 
 
 def test_download_user_data_skips_completed_progress_entries(tmp_path):
@@ -364,3 +421,98 @@ def test_fresh_chunked_download_skips_existing_legacy_collection(tmp_path):
     assert existing.exists()
     assert not (tmp_path / "output" / "mapillary-testuser-original-2").exists()
     assert FakeWorkerPool.instances == []
+
+
+def test_chunked_download_skips_when_manifest_final(tmp_path):
+    """A manifest with a final chunk should stop future reruns."""
+    FakeWorkerPool.instances = []
+    mock_client = Mock()
+    mock_client.access_token = "test-token"
+    staging_dir = tmp_path / "cache" / "mapillary-testuser-original"
+    staging_dir.mkdir(parents=True)
+    (staging_dir / "chunks.json").write_text(
+        json.dumps(
+            {
+                "mode": "chunked",
+                "params": {"username": "testuser", "quality": "original", "is_webp": False, "bbox": None},
+                "limits": {"max_size_bytes": 1, "max_images": None},
+                "next_chunk": 2,
+                "completed": [{"name": "mapillary-testuser-original", "images": 1, "bytes": 123, "final": True}],
+            }
+        )
+    )
+
+    with (
+        patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"),
+        patch("mapillary_downloader.downloader.AdaptiveWorkerPool", FakeWorkerPool),
+    ):
+        downloader = MapillaryDownloader(
+            mock_client,
+            tmp_path / "output",
+            username="testuser",
+            quality="original",
+            check_ia=False,
+            limits=DownloadLimits(max_size_bytes=1, min_free_space_bytes=None),
+        )
+        downloader.download_user_data()
+
+    assert FakeWorkerPool.instances == []
+
+
+def test_chunked_manifest_reconciles_finalizing_output(tmp_path):
+    """If a move completed before manifest update, startup should mark it completed."""
+    FakeWorkerPool.instances = []
+    mock_client = Mock()
+    mock_client.access_token = "test-token"
+    staging_dir = tmp_path / "cache" / "mapillary-testuser-original"
+    staging_dir.mkdir(parents=True)
+    output_dir = tmp_path / "output" / "mapillary-testuser-original"
+    output_dir.mkdir(parents=True)
+    (staging_dir / "chunks.json").write_text(
+        json.dumps(
+            {
+                "mode": "chunked",
+                "params": {"username": "testuser", "quality": "original", "is_webp": False, "bbox": None},
+                "limits": {"max_size_bytes": 1, "max_images": None},
+                "next_chunk": 1,
+                "finalizing": {"name": "mapillary-testuser-original", "images": 7, "bytes": 456, "final": True},
+                "completed": [],
+            }
+        )
+    )
+
+    with (
+        patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"),
+        patch("mapillary_downloader.downloader.AdaptiveWorkerPool", FakeWorkerPool),
+    ):
+        downloader = MapillaryDownloader(
+            mock_client,
+            tmp_path / "output",
+            username="testuser",
+            quality="original",
+            check_ia=False,
+            limits=DownloadLimits(max_size_bytes=1, min_free_space_bytes=None),
+        )
+        downloader.download_user_data()
+
+    manifest = json.loads((staging_dir / "chunks.json").read_text())
+    assert manifest["completed"] == [{"name": "mapillary-testuser-original", "images": 7, "bytes": 456, "final": True}]
+    assert "finalizing" not in manifest
+    assert FakeWorkerPool.instances == []
+
+
+def test_baseline_bytes_counts_existing_payload_files(tmp_path):
+    mock_client = Mock()
+    with patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"):
+        downloader = MapillaryDownloader(
+            mock_client,
+            tmp_path / "output",
+            username="testuser",
+            quality="original",
+            limits=DownloadLimits(max_size_bytes=1, min_free_space_bytes=None),
+        )
+        (downloader.output_dir / "2024-01-01.tar").write_bytes(b"12345")
+        (downloader.output_dir / "download.log.1").write_bytes(b"log")
+        downloader.baseline_bytes = downloader._baseline_bytes()
+
+    assert downloader.baseline_bytes == 5

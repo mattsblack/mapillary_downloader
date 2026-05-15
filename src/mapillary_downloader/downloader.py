@@ -2,7 +2,6 @@
 
 import json
 import logging
-import re
 import shutil
 import threading
 import time
@@ -144,16 +143,24 @@ class MapillaryDownloader:
         return set()
 
     def _baseline_bytes(self):
-        """Sum sizes of already-downloaded image files in date directories."""
+        """Sum sizes of already-downloaded payload files."""
         total = 0
-        for child in self.output_dir.iterdir():
-            if not child.is_dir():
+        skip_names = {
+            paths.METADATA_JSONL,
+            paths.METADATA_JSONL_GZ,
+            paths.PROGRESS_JSON,
+            paths.API_CURSOR,
+            paths.CHUNKS_JSON,
+            paths.IA_THUMBNAIL,
+        }
+        for f in self.output_dir.rglob("*"):
+            if not f.is_file():
                 continue
-            if not (re.match(r"\d{4}-\d{2}-\d{2}$", child.name) or child.name == "unknown-date"):
+            if f.name in skip_names or f.name.startswith(paths.LOG_FILE_PREFIX):
                 continue
-            for f in child.rglob("*"):
-                if f.is_file():
-                    total += f.stat().st_size
+            if ".meta" in f.parts:
+                continue
+            total += f.stat().st_size
         return total
 
     def _free_space_ok(self):
@@ -177,6 +184,34 @@ class MapillaryDownloader:
             max_size_bytes=self.limits.max_size_bytes,
             max_images=self.limits.max_images,
         )
+        if self.chunk_manifest.is_complete:
+            logger.info("Chunked collection already marked complete, skipping download")
+            self._close_file_handler()
+            self.chunk_manifest = None
+            return None
+
+        finalizing = self.chunk_manifest.finalizing
+        if finalizing:
+            finalizing_name = finalizing.get("name")
+            finalizing_dir = self.base_output_dir / finalizing_name
+            work_dir = self.staging_dir / finalizing_name
+            if finalizing_dir.exists():
+                logger.info("Reconciling completed finalization for %s", finalizing_name)
+                self.chunk_manifest.mark_completed(
+                    finalizing_name,
+                    finalizing.get("images", 0),
+                    finalizing.get("bytes", 0),
+                    final=finalizing.get("final", False),
+                )
+                if finalizing.get("final", False):
+                    self._close_file_handler()
+                    self.chunk_manifest = None
+                    return None
+            elif work_dir.exists():
+                raise RuntimeError(f"Finalization work directory exists and needs repair: {work_dir}")
+            else:
+                self.chunk_manifest.clear_finalizing()
+
         while self.chunk_manifest.next_output_dir(self.base_output_dir).exists():
             logger.info("Chunk output already exists locally: %s", self.chunk_manifest.next_name())
             self.chunk_manifest.advance()
@@ -553,8 +588,8 @@ class MapillaryDownloader:
         finally:
             # Shutdown worker pool
             pool.shutdown()
+            self._save_progress()
 
-        self._save_progress()
         elapsed = time.time() - start_time
 
         logger.info(
@@ -593,6 +628,12 @@ class MapillaryDownloader:
             chunk_name = self.chunk_manifest.next_name()
             final_dir = self.base_output_dir / chunk_name
             is_final = api_fetch_complete.is_set() and not api_fetch_stopped_early[0] and not batch_limit_reached
+            self.chunk_manifest.mark_finalizing(
+                chunk_name,
+                images=downloaded_count,
+                bytes_count=self.baseline_bytes + total_output_bytes,
+                final=is_final,
+            )
             finalize_collection(
                 self.output_dir,
                 final_dir,
@@ -606,6 +647,7 @@ class MapillaryDownloader:
                     f"Intermediate Mapillary download chunk {chunk_name}. "
                     "Master metadata is kept with the final chunk."
                 ),
+                chunk_username=self.username,
             )
             self.chunk_manifest.mark_completed(
                 chunk_name,
