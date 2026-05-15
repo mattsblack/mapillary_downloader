@@ -166,6 +166,10 @@ class MapillaryDownloader:
     def _init_chunk_manifest(self, bbox):
         if not self.chunked:
             return None
+        if not self.paths.chunks_file.exists() and self.final_dir.exists():
+            logger.info(f"Collection already exists at {self.final_dir}, skipping download")
+            self._close_file_handler()
+            return None
         self.chunk_manifest = ChunkManifest.for_paths(
             self.paths,
             self.collection_id,
@@ -179,6 +183,10 @@ class MapillaryDownloader:
 
         if self.check_ia:
             session = requests.Session()
+            if not self.paths.chunks_file.exists() and check_ia_exists(session, self.collection_name):
+                logger.info("Collection already exists on archive.org, skipping download")
+                self._close_file_handler()
+                return None
             while check_ia_exists(session, self.chunk_manifest.next_name()):
                 logger.info("Chunk already exists on archive.org: %s", self.chunk_manifest.next_name())
                 self.chunk_manifest.advance()
@@ -282,6 +290,8 @@ class MapillaryDownloader:
             raise ValueError("Username and quality must be provided during initialization")
 
         self._init_chunk_manifest(bbox)
+        if self.chunked and self.chunk_manifest is None:
+            return
 
         # Check if collection already exists in final destination
         if not self.chunked and self.final_dir.exists():

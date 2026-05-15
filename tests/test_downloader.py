@@ -305,6 +305,19 @@ def test_chunked_download_skips_existing_output_chunk(tmp_path):
     )
     existing = tmp_path / "output" / "mapillary-testuser-original"
     existing.mkdir(parents=True)
+    staging_dir = tmp_path / "cache" / "mapillary-testuser-original"
+    staging_dir.mkdir(parents=True)
+    (staging_dir / "chunks.json").write_text(
+        json.dumps(
+            {
+                "mode": "chunked",
+                "params": {"username": "testuser", "quality": "original", "is_webp": False, "bbox": None},
+                "limits": {"max_size_bytes": 1, "max_images": None},
+                "next_chunk": 1,
+                "completed": [],
+            }
+        )
+    )
 
     with (
         patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"),
@@ -324,3 +337,30 @@ def test_chunked_download_skips_existing_output_chunk(tmp_path):
 
     assert existing.exists()
     assert (tmp_path / "output" / "mapillary-testuser-original-2").exists()
+
+
+def test_fresh_chunked_download_skips_existing_legacy_collection(tmp_path):
+    """Default chunking must not duplicate an already-complete legacy output as -2."""
+    FakeWorkerPool.instances = []
+    mock_client = Mock()
+    mock_client.access_token = "test-token"
+    existing = tmp_path / "output" / "mapillary-testuser-original"
+    existing.mkdir(parents=True)
+
+    with (
+        patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"),
+        patch("mapillary_downloader.downloader.AdaptiveWorkerPool", FakeWorkerPool),
+    ):
+        downloader = MapillaryDownloader(
+            mock_client,
+            tmp_path / "output",
+            username="testuser",
+            quality="original",
+            check_ia=False,
+            limits=DownloadLimits(max_size_bytes=900_000_000_000, min_free_space_bytes=None),
+        )
+        downloader.download_user_data()
+
+    assert existing.exists()
+    assert not (tmp_path / "output" / "mapillary-testuser-original-2").exists()
+    assert FakeWorkerPool.instances == []
