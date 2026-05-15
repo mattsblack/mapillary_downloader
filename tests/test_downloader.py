@@ -261,6 +261,43 @@ def test_download_user_data_skips_completed_progress_entries(tmp_path):
     assert downloader.downloaded == {"img1"}
 
 
+def test_download_user_data_finalizes_when_no_images_downloadable(tmp_path):
+    """A clean metadata run with missing image URLs should still create an output collection."""
+    FakeWorkerPool.instances = []
+    mock_client = Mock()
+    mock_client.access_token = "test-token"
+    mock_client.get_user_images.return_value = iter(
+        [
+            {
+                "id": "img1",
+                "captured_at": 1700000000000,
+            }
+        ]
+    )
+
+    with (
+        patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"),
+        patch("mapillary_downloader.downloader.AdaptiveWorkerPool", FakeWorkerPool),
+        patch("mapillary_downloader.downloader.finalize_collection", side_effect=fake_finalize_collection),
+    ):
+        downloader = MapillaryDownloader(
+            mock_client,
+            tmp_path / "output",
+            username="testuser",
+            quality="original",
+            tar_sequences=False,
+            check_ia=False,
+            limits=DownloadLimits(max_size_bytes=None, min_free_space_bytes=None),
+        )
+
+        downloader.download_user_data()
+
+    pool = FakeWorkerPool.instances[0]
+    assert pool.submitted == []
+    assert downloader.final_dir.exists()
+    assert (downloader.final_dir / "metadata.jsonl").exists()
+
+
 def test_download_user_data_closes_file_handler_when_final_dir_exists(tmp_path):
     """Skip paths should not leave per-user file log handlers attached."""
     mock_client = Mock()

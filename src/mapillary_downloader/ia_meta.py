@@ -88,8 +88,15 @@ def count_images(metadata_file):
     count = 0
     with gzip.open(metadata_file, "rt") as f:
         for line in f:
-            if line.strip():
-                count += 1
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if data.get("__complete__"):
+                continue
+            count += 1
     return count
 
 

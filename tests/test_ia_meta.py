@@ -3,7 +3,7 @@
 import gzip
 import json
 
-from mapillary_downloader.ia_meta import get_date_range, parse_collection_info
+from mapillary_downloader.ia_meta import count_images, get_date_range, parse_collection_info
 
 
 def test_get_date_range_uses_utc(tmp_path):
@@ -14,6 +14,15 @@ def test_get_date_range_uses_utc(tmp_path):
         f.write(json.dumps({"id": "after_midnight", "captured_at": 1704067200000}) + "\n")
 
     assert get_date_range(metadata_file) == ("2023-12-31", "2024-01-01")
+
+
+def test_count_images_ignores_completion_marker(tmp_path):
+    metadata_file = tmp_path / "metadata.jsonl.gz"
+    with gzip.open(metadata_file, "wt") as f:
+        f.write(json.dumps({"id": "img1"}) + "\n")
+        f.write(json.dumps({"__complete__": True}) + "\n")
+
+    assert count_images(metadata_file) == 1
 
 
 def test_parse_collection_info_accepts_chunk_suffix():

@@ -608,21 +608,12 @@ class MapillaryDownloader:
             self._close_file_handler()
             raise RuntimeError("Minimum free space reached")
 
-        # If API fetch failed or nothing was downloaded, leave staging dir for retry
+        # If API fetch failed, leave staging dir for retry. A clean run with no
+        # downloadable image URLs is still finalized so IA can mark it archived.
         if api_fetch_error[0] is not None:
             logger.error("API fetch failed, leaving staging dir for retry: %s", self.staging_dir)
             self._close_file_handler()
             raise api_fetch_error[0]
-
-        if downloaded_count == 0 and not self.downloaded:
-            logger.warning("No images downloaded, leaving staging dir for retry: %s", self.staging_dir)
-            self._close_file_handler()
-            return
-
-        if self.chunked and downloaded_count == 0 and self.baseline_bytes == 0:
-            logger.info("No pending images for chunked collection")
-            self._close_file_handler()
-            return
 
         if self.chunked:
             chunk_name = self.chunk_manifest.next_name()
