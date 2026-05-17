@@ -33,6 +33,13 @@ def test_format_size_gigabytes():
     assert format_size(10_000_000_000) == "10.00 GB"
 
 
+def test_format_size_terabytes():
+    """Test formatting terabytes."""
+    assert format_size(1_000_000_000_000) == "1.00 TB"
+    assert format_size(1_500_000_000_000) == "1.50 TB"
+    assert format_size(10_000_000_000_000) == "10.00 TB"
+
+
 def test_format_time_seconds():
     """Test formatting seconds."""
     assert format_time(0) == "0s"

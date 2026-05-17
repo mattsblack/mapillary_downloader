@@ -36,13 +36,17 @@ def format_size(bytes_count):
     Returns:
         Formatted string (e.g. "1.23 GB", "456.78 MB")
     """
-    if bytes_count >= 1_000_000_000:
-        return f"{bytes_count / 1_000_000_000:.2f} GB"
-    if bytes_count >= 1_000_000:
-        return f"{bytes_count / 1_000_000:.2f} MB"
-    if bytes_count >= 1_000:
-        return f"{bytes_count / 1000:.2f} KB"
-    return f"{bytes_count} B"
+    units = ["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"]
+    unit_idx = 0
+    size = bytes_count
+
+    while size >= 1000 and unit_idx < len(units) - 1:
+        size /= 1000
+        unit_idx += 1
+
+    if unit_idx == 0:
+        return f"{size} {units[unit_idx]}"
+    return f"{size:.2f} {units[unit_idx]}"
 
 
 def format_time(seconds):
