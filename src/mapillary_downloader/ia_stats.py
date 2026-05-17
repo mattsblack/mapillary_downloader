@@ -255,9 +255,9 @@ def format_stats(session, stats, cache):
     for quality, data in qualities:
         pct = (data["images"] / TOTAL_MAPILLARY_IMAGES * 100) if data["images"] else 0
         output.append(
-            f"  {quality:8s}  {data['collections']:3d} collections  "
-            f"{data['images']:12,d} images ({pct:.3f}%)  "
-            f"{format_size(data['bytes']):>8s}"
+            f"  {quality:8s}  {data['collections']:7,d} collections  "
+            f"{data['images']:13,d} images ({pct:7.3f}%)  "
+            f"{format_size(data['bytes']):>10s}"
         )
 
     output.append("")
