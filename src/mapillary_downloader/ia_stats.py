@@ -16,6 +16,11 @@ CACHE_FILE = paths.cache_file(paths.STATS_CACHE_JSON)
 def search_ia_collections(session):
     """Search IA for all mapillary_downloader collections.
 
+    Matches on the ``mapillary-*`` identifier naming convention rather than the
+    ``mapillary_downloader`` metadata tag, so hand-uploaded items that skipped
+    our finalizer (no tag, often left in ``opensource``) are still found. Items
+    whose names don't parse as a collection are dropped later in update_cache().
+
     Uses the scrape API with cursor pagination so we get every matching item
     rather than a 10k-capped subset.
 
@@ -25,11 +30,11 @@ def search_ia_collections(session):
     Returns:
         List of dicts with: identifier, description, item_size, collection
     """
-    logger.info("Searching archive.org for mapillary_downloader collections...")
+    logger.info("Searching archive.org for mapillary-* collections...")
 
     url = "https://archive.org/services/search/v1/scrape"
     base_params = {
-        "q": "mapillary_downloader:*",
+        "q": "identifier:mapillary-*",
         "fields": "identifier,description,item_size,collection",
         "count": 10000,
     }
