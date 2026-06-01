@@ -1,144 +1,168 @@
-"""Worker process for parallel image download and conversion."""
+"""Stage functions for the two-stage download/convert pipeline.
+
+The pipeline is split into two cooperating stages so that network-bound work
+and CPU-bound WebP encoding can each run at their own ideal concurrency:
+
+- ``download_and_prepare`` runs in I/O-bound download workers. It fetches the
+  image into memory and applies metadata. For the non-WebP path it writes the
+  final JPEG itself; for the WebP path it returns a :class:`ConvertTask` for a
+  CPU-bound converter to encode.
+- ``convert_task`` runs in CPU-bound convert workers. It encodes the in-memory
+  JPEG to WebP with Pillow (no subprocess, no intermediate temp file).
+"""
 
 import os
-import shutil
-import signal
-import tempfile
+from collections import namedtuple
 from datetime import datetime
 from pathlib import Path
-import requests
-from mapillary_downloader.exif_writer import write_exif_to_image
-from mapillary_downloader.xmp_writer import write_xmp_to_image
-from mapillary_downloader.webp_converter import convert_to_webp
+
+from mapillary_downloader.exif_writer import build_exif_bytes, write_exif_to_image
+from mapillary_downloader.webp_converter import encode_webp
+from mapillary_downloader.xmp_writer import build_xmp_bytes, write_xmp_to_image
 from mapillary_downloader.utils import http_get_with_retry
 
+# Work passed from the download stage to the convert stage.
+ConvertTask = namedtuple(
+    "ConvertTask",
+    [
+        "image_id",
+        "sequence_id",
+        "bytes_downloaded",
+        "jpeg_bytes",
+        "exif_bytes",
+        "xmp_bytes",
+        "final_path",
+        "mtime",
+        "quality",
+        "method",
+    ],
+)
 
-def worker_process(work_queue, result_queue, worker_id):
-    """Worker process that pulls from queue and processes images.
+
+def _image_dir(output_dir, image_data):
+    """Resolve the per-image output directory (organized by capture date)."""
+    output_dir = Path(output_dir)
+    sequence_id = image_data.get("sequence")
+
+    captured_at = image_data.get("captured_at")
+    if captured_at:
+        date_str = datetime.utcfromtimestamp(captured_at / 1000).strftime("%Y-%m-%d")
+    else:
+        date_str = "unknown-date"
+
+    if sequence_id:
+        img_dir = output_dir / date_str / sequence_id
+    else:
+        img_dir = output_dir / date_str
+    img_dir.mkdir(parents=True, exist_ok=True)
+    return img_dir, sequence_id
+
+
+def download_and_prepare(work_item, session):
+    """Download an image and apply metadata (runs in a download worker).
 
     Args:
-        work_queue: Queue to pull work items from
-        result_queue: Queue to push results to
-        worker_id: Unique worker identifier
-    """
-    # Ignore SIGINT in worker process - parent will handle it
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-
-    # Create session once per worker (reuse HTTP connections)
-    session = requests.Session()
-
-    while True:
-        work_item = work_queue.get()
-
-        # None is the shutdown signal
-        if work_item is None:
-            break
-
-        # Unpack work item
-        image_data, output_dir, quality, convert_webp, access_token = work_item
-
-        # Update session auth for this request
-        session.headers.update({"Authorization": f"OAuth {access_token}"})
-
-        # Process the image
-        result = download_and_convert_image(image_data, output_dir, quality, convert_webp, session)
-
-        # Push result back
-        result_queue.put(result)
-
-
-def download_and_convert_image(image_data, output_dir, quality, convert_webp, session):
-    """Download and optionally convert a single image.
-
-    This function is designed to run in a worker process.
-
-    Args:
-        image_data: Image metadata dict from API
-        output_dir: Base output directory path
-        quality: Quality level (256, 1024, 2048, original)
-        convert_webp: Whether to convert to WebP
-        session: requests.Session with auth already configured
+        work_item: Tuple of
+            (image_data, output_dir, quality, convert_webp, access_token,
+             webp_quality, webp_method)
+        session: requests.Session reused by this worker
 
     Returns:
-        Tuple of (image_id, bytes_downloaded, output_bytes, sequence_id, success, error_msg)
+        Tuple of (kind, payload):
+          - ("result", result_tuple) when the image is fully handled (failure,
+            or a JPEG written directly for the non-WebP path)
+          - ("convert", ConvertTask) when WebP encoding still needs to happen
     """
+    image_data, output_dir, quality, convert_webp, access_token, webp_quality, webp_method = work_item
+
     image_id = image_data["id"]
     quality_field = f"thumb_{quality}_url"
+    sequence_id = image_data.get("sequence")
 
-    temp_dir = None
     try:
-        # Get image URL
         image_url = image_data.get(quality_field)
         if not image_url:
-            return (image_id, 0, 0, None, False, f"No {quality} URL")
+            return "result", (image_id, 0, 0, sequence_id, False, f"No {quality} URL")
 
-        # Determine final output directory - organize by capture date
-        output_dir = Path(output_dir)
-        sequence_id = image_data.get("sequence")
+        img_dir, sequence_id = _image_dir(output_dir, image_data)
 
-        # Extract date from captured_at timestamp (milliseconds since epoch)
-        captured_at = image_data.get("captured_at")
-        if captured_at:
-            # Convert to UTC date string (YYYY-MM-DD)
-            date_str = datetime.utcfromtimestamp(captured_at / 1000).strftime("%Y-%m-%d")
-        else:
-            # Fallback for missing timestamp (should be rare per API docs)
-            date_str = "unknown-date"
-
-        if sequence_id:
-            img_dir = output_dir / date_str / sequence_id
-            img_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            img_dir = output_dir / date_str
-            img_dir.mkdir(parents=True, exist_ok=True)
-
-        # If converting to WebP, use /tmp for intermediate JPEG
-        # Otherwise write JPEG directly to final location
-        if convert_webp:
-            temp_dir = tempfile.mkdtemp(prefix="mapillary_downloader_")
-            jpg_path = Path(temp_dir) / f"{image_id}.jpg"
-            final_path = img_dir / f"{image_id}.webp"
-        else:
-            jpg_path = img_dir / f"{image_id}.jpg"
-            final_path = jpg_path
-
-        # Download image with retry logic
-        bytes_downloaded = 0
+        session.headers.update({"Authorization": f"OAuth {access_token}"})
 
         try:
-            # Use retry logic with 3 attempts for image downloads
             response = http_get_with_retry(session, image_url, max_retries=3, base_delay=1.0, timeout=60)
-
-            with open(jpg_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-                    bytes_downloaded += len(chunk)
+            jpeg_bytes = response.content
         except Exception as e:
-            return (image_id, 0, 0, sequence_id, False, f"Download failed: {e}")
+            return "result", (image_id, 0, 0, sequence_id, False, f"Download failed: {e}")
 
-        # Write EXIF metadata
-        write_exif_to_image(jpg_path, image_data)
+        bytes_downloaded = len(jpeg_bytes)
 
-        # Write XMP metadata for panoramas
-        write_xmp_to_image(jpg_path, image_data)
-
-        # Convert to WebP if requested
-        if convert_webp:
-            webp_path = convert_to_webp(jpg_path, output_path=final_path, delete_original=False)
-            if not webp_path:
-                return (image_id, bytes_downloaded, 0, sequence_id, False, "WebP conversion failed")
-
-        # Set file mtime to captured_at timestamp for reproducibility
+        mtime = None
         if "captured_at" in image_data:
-            # captured_at is in milliseconds, convert to seconds
             mtime = image_data["captured_at"] / 1000
+
+        if convert_webp:
+            exif_bytes = build_exif_bytes(image_data, source_bytes=jpeg_bytes)
+            xmp_bytes = build_xmp_bytes(image_data)
+            final_path = img_dir / f"{image_id}.webp"
+            task = ConvertTask(
+                image_id=image_id,
+                sequence_id=sequence_id,
+                bytes_downloaded=bytes_downloaded,
+                jpeg_bytes=jpeg_bytes,
+                exif_bytes=exif_bytes,
+                xmp_bytes=xmp_bytes,
+                final_path=final_path,
+                mtime=mtime,
+                quality=webp_quality,
+                method=webp_method,
+            )
+            return "convert", task
+
+        # Non-WebP path: write the JPEG and its metadata directly.
+        final_path = img_dir / f"{image_id}.jpg"
+        with open(final_path, "wb") as f:
+            f.write(jpeg_bytes)
+
+        write_exif_to_image(final_path, image_data)
+        write_xmp_to_image(final_path, image_data)
+
+        if mtime is not None:
             os.utime(final_path, (mtime, mtime))
 
         output_bytes = final_path.stat().st_size if final_path.exists() else bytes_downloaded
-        return (image_id, bytes_downloaded, output_bytes, sequence_id, True, None)
+        return "result", (image_id, bytes_downloaded, output_bytes, sequence_id, True, None)
 
     except Exception as e:
-        return (image_id, 0, 0, image_data.get("sequence"), False, str(e))
-    finally:
-        if temp_dir:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+        return "result", (image_id, 0, 0, sequence_id, False, str(e))
+
+
+def convert_task(task):
+    """Encode a prepared image to WebP (runs in a convert worker).
+
+    Args:
+        task: ConvertTask produced by :func:`download_and_prepare`
+
+    Returns:
+        Result tuple
+        (image_id, bytes_downloaded, output_bytes, sequence_id, success, error)
+    """
+    try:
+        webp_path = encode_webp(
+            task.jpeg_bytes,
+            task.final_path,
+            exif=task.exif_bytes,
+            xmp=task.xmp_bytes,
+            quality=task.quality,
+            method=task.method,
+        )
+        if webp_path is None:
+            return (task.image_id, task.bytes_downloaded, 0, task.sequence_id, False, "WebP conversion failed")
+
+        if task.mtime is not None:
+            os.utime(webp_path, (task.mtime, task.mtime))
+
+        output_bytes = webp_path.stat().st_size if webp_path.exists() else task.bytes_downloaded
+        return (task.image_id, task.bytes_downloaded, output_bytes, task.sequence_id, True, None)
+
+    except Exception as e:
+        return (task.image_id, task.bytes_downloaded, 0, task.sequence_id, False, str(e))

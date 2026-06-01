@@ -36,7 +36,10 @@ mapillary-downloader --output ./downloads USERNAME1
 | `--quality`     | 256, 1024, 2048 or original                  | `original`         |
 | `--bbox`        | `west,south,east,north`                      | `None`             |
 | `--no-webp`     | Don't convert to WebP                        | `False`            |
-| `--max-workers` | Maximum number of parallel download workers  | CPU count          |
+| `--max-workers` | Maximum number of parallel download workers  | `64`               |
+| `--convert-workers` | Number of CPU-bound WebP convert workers | CPU count          |
+| `--webp-quality` | WebP quality 0-100 (higher = larger/better) | `80`              |
+| `--webp-method` | WebP encode method 0 (fast) - 6 (slow/best)  | `4`                |
 | `--max-size`    | Approximate output batch size, or `none`     | `900GB`            |
 | `--min-free-space` | Stop before disk fills, or `none`         | `50GB`             |
 | `--max-images`  | Approximate output batch image count         | `None`             |
@@ -59,15 +62,14 @@ The downloader will:
 
 ## 🖼️ WebP Conversion
 
-You'll need the `cwebp` binary installed:
+WebP conversion is done in-process with Pillow (no external `cwebp` binary
+required), and runs as a separate stage from downloading: many I/O-bound
+download workers feed a CPU-sized pool of convert workers, so the network and
+CPUs stay busy at the same time.
 
-```bash
-# Debian/Ubuntu
-sudo apt install webp
-
-# macOS
-brew install webp
-```
+Tune the trade-offs with `--convert-workers` (defaults to your CPU count),
+`--webp-quality`, and `--webp-method` (lower is faster, higher compresses
+better).
 
 To disable WebP conversion and keep original JPEGs, use `--no-webp`:
 

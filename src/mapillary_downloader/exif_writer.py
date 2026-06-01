@@ -39,8 +39,115 @@ def timestamp_to_exif_datetime(timestamp):
     return dt.strftime("%Y:%m:%d %H:%M:%S")
 
 
+def _populate_exif_dict(exif_dict, metadata):
+    """Merge Mapillary metadata into an existing piexif EXIF dict in place.
+
+    Args:
+        exif_dict: piexif-style dict (may contain pre-existing tags to preserve)
+        metadata: Dictionary of metadata from Mapillary API
+
+    Returns:
+        The same exif_dict, mutated.
+    """
+    # Ensure all IFDs exist
+    for ifd in ["0th", "Exif", "GPS", "1st"]:
+        if ifd not in exif_dict:
+            exif_dict[ifd] = {}
+
+    # Basic image info (0th IFD)
+    if "make" in metadata and metadata["make"]:
+        exif_dict["0th"][piexif.ImageIFD.Make] = metadata["make"].encode("utf-8")
+
+    if "model" in metadata and metadata["model"]:
+        exif_dict["0th"][piexif.ImageIFD.Model] = metadata["model"].encode("utf-8")
+
+    if "width" in metadata and metadata["width"]:
+        exif_dict["0th"][piexif.ImageIFD.ImageWidth] = metadata["width"]
+
+    if "height" in metadata and metadata["height"]:
+        exif_dict["0th"][piexif.ImageIFD.ImageLength] = metadata["height"]
+
+    # Datetime tags
+    if "captured_at" in metadata and metadata["captured_at"]:
+        datetime_str = timestamp_to_exif_datetime(metadata["captured_at"])
+        datetime_bytes = datetime_str.encode("utf-8")
+        exif_dict["0th"][piexif.ImageIFD.DateTime] = datetime_bytes
+        exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal] = datetime_bytes
+        exif_dict["Exif"][piexif.ExifIFD.DateTimeDigitized] = datetime_bytes
+        exif_dict["Exif"][piexif.ExifIFD.SubSecTimeOriginal] = ("000" + str(metadata["captured_at"] % 1000))[-3:]
+        exif_dict["Exif"][piexif.ExifIFD.SubSecTimeDigitized] = ("000" + str(metadata["captured_at"] % 1000))[-3:]
+        exif_dict["Exif"][piexif.ExifIFD.OffsetTime] = b"+00:00"
+        exif_dict["Exif"][piexif.ExifIFD.OffsetTimeOriginal] = b"+00:00"
+        exif_dict["Exif"][piexif.ExifIFD.OffsetTimeDigitized] = b"+00:00"
+
+    # GPS data - prefer computed_geometry over geometry
+    geometry = metadata.get("computed_geometry") or metadata.get("geometry")
+    if geometry and "coordinates" in geometry:
+        lon, lat = geometry["coordinates"]
+
+        # GPS Latitude
+        exif_dict["GPS"][piexif.GPSIFD.GPSLatitude] = decimal_to_dms(lat)
+        exif_dict["GPS"][piexif.GPSIFD.GPSLatitudeRef] = b"N" if lat >= 0 else b"S"
+
+        # GPS Longitude
+        exif_dict["GPS"][piexif.GPSIFD.GPSLongitude] = decimal_to_dms(lon)
+        exif_dict["GPS"][piexif.GPSIFD.GPSLongitudeRef] = b"E" if lon >= 0 else b"W"
+
+    # GPS Altitude - prefer raw altitude (photogrammetry can't compute elevation)
+    altitude = metadata.get("altitude") or metadata.get("computed_altitude")
+    if altitude is not None:
+        # Mapillary sometimes returns unsigned-wrapped negatives (e.g. 4294967281 = -15 as int32)
+        if altitude > 100000:
+            altitude = altitude - 4294967296 if altitude > 2147483647 else None
+        if altitude is not None and abs(altitude) <= 100000:
+            altitude_val = int(abs(altitude) * 100)
+            logger.debug(f"Raw altitude value: {altitude}, calculated: {altitude_val}")
+            exif_dict["GPS"][piexif.GPSIFD.GPSAltitude] = (altitude_val, 100)
+            exif_dict["GPS"][piexif.GPSIFD.GPSAltitudeRef] = 1 if altitude < 0 else 0
+
+    # GPS Compass direction
+    compass = metadata.get("computed_compass_angle") or metadata.get("compass_angle")
+    if compass is not None:
+        # Normalize compass to 0-360 range
+        compass_val = int((compass % 360) * 100)
+        exif_dict["GPS"][piexif.GPSIFD.GPSImgDirection] = (compass_val, 100)
+        exif_dict["GPS"][piexif.GPSIFD.GPSImgDirectionRef] = b"T"  # True north
+
+    # GPS Version
+    exif_dict["GPS"][piexif.GPSIFD.GPSVersionID] = (2, 0, 0, 0)
+
+    return exif_dict
+
+
+def build_exif_bytes(metadata, source_bytes=None):
+    """Build EXIF bytes for embedding, merging onto any source image's EXIF.
+
+    Args:
+        metadata: Dictionary of metadata from Mapillary API
+        source_bytes: Optional raw JPEG bytes whose existing EXIF (e.g. camera
+            orientation) should be preserved and extended
+
+    Returns:
+        EXIF bytes (as produced by piexif.dump), or None on failure
+    """
+    try:
+        exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
+        if source_bytes is not None:
+            try:
+                exif_dict = piexif.load(source_bytes)
+            except Exception:
+                pass
+
+        _populate_exif_dict(exif_dict, metadata)
+        return piexif.dump(exif_dict)
+    except Exception as e:
+        logger.warning(f"Failed to build EXIF data: {e}")
+        logger.debug(f"Full metadata: {metadata}")
+        return None
+
+
 def write_exif_to_image(image_path, metadata):
-    """Write EXIF metadata from Mapillary API to downloaded image.
+    """Write EXIF metadata from Mapillary API to a downloaded image file.
 
     Args:
         image_path: Path to the downloaded image file
@@ -60,72 +167,7 @@ def write_exif_to_image(image_path, metadata):
             # No existing EXIF data, start fresh
             exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
 
-        # Ensure all IFDs exist
-        for ifd in ["0th", "Exif", "GPS", "1st"]:
-            if ifd not in exif_dict:
-                exif_dict[ifd] = {}
-
-        # Basic image info (0th IFD)
-        if "make" in metadata and metadata["make"]:
-            exif_dict["0th"][piexif.ImageIFD.Make] = metadata["make"].encode("utf-8")
-
-        if "model" in metadata and metadata["model"]:
-            exif_dict["0th"][piexif.ImageIFD.Model] = metadata["model"].encode("utf-8")
-
-        if "width" in metadata and metadata["width"]:
-            exif_dict["0th"][piexif.ImageIFD.ImageWidth] = metadata["width"]
-
-        if "height" in metadata and metadata["height"]:
-            exif_dict["0th"][piexif.ImageIFD.ImageLength] = metadata["height"]
-
-        # Datetime tags
-        if "captured_at" in metadata and metadata["captured_at"]:
-            datetime_str = timestamp_to_exif_datetime(metadata["captured_at"])
-            datetime_bytes = datetime_str.encode("utf-8")
-            exif_dict["0th"][piexif.ImageIFD.DateTime] = datetime_bytes
-            exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal] = datetime_bytes
-            exif_dict["Exif"][piexif.ExifIFD.DateTimeDigitized] = datetime_bytes
-            exif_dict["Exif"][piexif.ExifIFD.SubSecTimeOriginal] = ("000" + str(metadata["captured_at"] % 1000))[-3:]
-            exif_dict["Exif"][piexif.ExifIFD.SubSecTimeDigitized] = ("000" + str(metadata["captured_at"] % 1000))[-3:]
-            exif_dict["Exif"][piexif.ExifIFD.OffsetTime] = b"+00:00"
-            exif_dict["Exif"][piexif.ExifIFD.OffsetTimeOriginal] = b"+00:00"
-            exif_dict["Exif"][piexif.ExifIFD.OffsetTimeDigitized] = b"+00:00"
-
-        # GPS data - prefer computed_geometry over geometry
-        geometry = metadata.get("computed_geometry") or metadata.get("geometry")
-        if geometry and "coordinates" in geometry:
-            lon, lat = geometry["coordinates"]
-
-            # GPS Latitude
-            exif_dict["GPS"][piexif.GPSIFD.GPSLatitude] = decimal_to_dms(lat)
-            exif_dict["GPS"][piexif.GPSIFD.GPSLatitudeRef] = b"N" if lat >= 0 else b"S"
-
-            # GPS Longitude
-            exif_dict["GPS"][piexif.GPSIFD.GPSLongitude] = decimal_to_dms(lon)
-            exif_dict["GPS"][piexif.GPSIFD.GPSLongitudeRef] = b"E" if lon >= 0 else b"W"
-
-        # GPS Altitude - prefer raw altitude (photogrammetry can't compute elevation)
-        altitude = metadata.get("altitude") or metadata.get("computed_altitude")
-        if altitude is not None:
-            # Mapillary sometimes returns unsigned-wrapped negatives (e.g. 4294967281 = -15 as int32)
-            if altitude > 100000:
-                altitude = altitude - 4294967296 if altitude > 2147483647 else None
-            if altitude is not None and abs(altitude) <= 100000:
-                altitude_val = int(abs(altitude) * 100)
-                logger.debug(f"Raw altitude value: {altitude}, calculated: {altitude_val}")
-                exif_dict["GPS"][piexif.GPSIFD.GPSAltitude] = (altitude_val, 100)
-                exif_dict["GPS"][piexif.GPSIFD.GPSAltitudeRef] = 1 if altitude < 0 else 0
-
-        # GPS Compass direction
-        compass = metadata.get("computed_compass_angle") or metadata.get("compass_angle")
-        if compass is not None:
-            # Normalize compass to 0-360 range
-            compass_val = int((compass % 360) * 100)
-            exif_dict["GPS"][piexif.GPSIFD.GPSImgDirection] = (compass_val, 100)
-            exif_dict["GPS"][piexif.GPSIFD.GPSImgDirectionRef] = b"T"  # True north
-
-        # GPS Version
-        exif_dict["GPS"][piexif.GPSIFD.GPSVersionID] = (2, 0, 0, 0)
+        _populate_exif_dict(exif_dict, metadata)
 
         # Dump and write EXIF data
         exif_bytes = piexif.dump(exif_dict)

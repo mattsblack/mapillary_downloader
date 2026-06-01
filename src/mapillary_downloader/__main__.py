@@ -10,7 +10,11 @@ from mapillary_downloader.downloader import MapillaryDownloader, clean_log_only_
 from mapillary_downloader.ia_stats import show_stats
 from mapillary_downloader.limits import DownloadLimits, parse_size
 from mapillary_downloader.logging_config import setup_logging
-from mapillary_downloader.webp_converter import check_cwebp_available
+from mapillary_downloader.webp_converter import (
+    DEFAULT_WEBP_METHOD,
+    DEFAULT_WEBP_QUALITY,
+    check_webp_available,
+)
 
 
 def main():
@@ -46,8 +50,26 @@ def main():
     parser.add_argument(
         "--max-workers",
         type=int,
-        default=os.cpu_count() or 8,
-        help=f"Maximum number of parallel workers (default: CPU count = {os.cpu_count() or 8})",
+        default=64,
+        help="Maximum number of parallel download (I/O) workers (default: 64)",
+    )
+    parser.add_argument(
+        "--convert-workers",
+        type=int,
+        default=os.cpu_count() or 4,
+        help=f"Number of CPU-bound WebP convert workers (default: CPU count = {os.cpu_count() or 4})",
+    )
+    parser.add_argument(
+        "--webp-quality",
+        type=int,
+        default=DEFAULT_WEBP_QUALITY,
+        help=f"WebP quality 0-100, higher is larger/better (default: {DEFAULT_WEBP_QUALITY})",
+    )
+    parser.add_argument(
+        "--webp-method",
+        type=int,
+        default=DEFAULT_WEBP_METHOD,
+        help=f"WebP encode method 0 (fast) - 6 (slow/best) (default: {DEFAULT_WEBP_METHOD})",
     )
     parser.add_argument(
         "--max-size",
@@ -140,14 +162,14 @@ def main():
     # WebP is enabled by default, disabled with --no-webp
     convert_webp = not args.no_webp
 
-    # Check for cwebp binary if WebP conversion is enabled
+    # Check that Pillow has WebP support if WebP conversion is enabled
     if convert_webp:
-        if not check_cwebp_available():
+        if not check_webp_available():
             logger.error(
-                "Error: cwebp binary not found. Install webp package (e.g., apt install webp) or use --no-webp"
+                "Error: Pillow was built without WebP support. Reinstall Pillow with WebP enabled or use --no-webp"
             )
             sys.exit(1)
-        logger.info("WebP conversion enabled - images will be converted after download")
+        logger.info("WebP conversion enabled - images will be converted in-process during download")
 
     try:
         client = MapillaryClient(args.token)
@@ -173,6 +195,9 @@ def main():
                     convert_webp=convert_webp,
                     check_ia=not args.no_check_ia,
                     limits=limits,
+                    convert_workers=args.convert_workers,
+                    webp_quality=args.webp_quality,
+                    webp_method=args.webp_method,
                 )
                 downloader.download_user_data(bbox=bbox)
             except Exception as e:

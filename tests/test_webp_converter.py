@@ -1,98 +1,110 @@
-"""Tests for WebP conversion."""
+"""Tests for Pillow-based WebP conversion."""
 
-from unittest.mock import Mock, patch
-from mapillary_downloader.webp_converter import check_cwebp_available, convert_to_webp
+import io
+
+from PIL import Image
+
+from mapillary_downloader.webp_converter import (
+    check_webp_available,
+    convert_to_webp,
+    encode_webp,
+)
 
 
-def test_check_cwebp_available_when_installed():
-    """Test cwebp detection when binary is available."""
-    with patch("shutil.which", return_value="/usr/bin/cwebp"):
-        assert check_cwebp_available() is True
+def _jpeg_bytes(size=(64, 48), color="red"):
+    """Return a small in-memory JPEG for tests."""
+    buf = io.BytesIO()
+    Image.new("RGB", size, color=color).save(buf, "JPEG")
+    return buf.getvalue()
 
 
-def test_check_cwebp_available_when_not_installed():
-    """Test cwebp detection when binary is not available."""
-    with patch("shutil.which", return_value=None):
-        assert check_cwebp_available() is False
+def test_check_webp_available():
+    """Pillow in the test environment should support WebP."""
+    assert check_webp_available() is True
+
+
+def test_encode_webp_success(tmp_path):
+    """encode_webp writes a valid WebP file from in-memory JPEG bytes."""
+    webp_output = tmp_path / "test.webp"
+
+    result = encode_webp(_jpeg_bytes(), webp_output)
+
+    assert result == webp_output
+    assert webp_output.exists()
+    with Image.open(webp_output) as img:
+        assert img.format == "WEBP"
+
+
+def test_encode_webp_creates_parent_dirs(tmp_path):
+    """Output directory is created if needed."""
+    webp_output = tmp_path / "nested" / "dir" / "test.webp"
+
+    encode_webp(_jpeg_bytes(), webp_output)
+
+    assert webp_output.exists()
+
+
+def test_encode_webp_failure_returns_none(tmp_path):
+    """Invalid image bytes yield None instead of raising."""
+    webp_output = tmp_path / "bad.webp"
+
+    result = encode_webp(b"not a real image", webp_output)
+
+    assert result is None
+    assert not webp_output.exists()
+
+
+def test_encode_webp_embeds_xmp(tmp_path):
+    """XMP bytes passed to encode_webp are embedded in the output."""
+    webp_output = tmp_path / "pano.webp"
+    xmp = b'<x:xmpmeta xmlns:x="adobe:ns:meta/">marker-equirectangular</x:xmpmeta>'
+
+    encode_webp(_jpeg_bytes(), webp_output, xmp=xmp)
+
+    with Image.open(webp_output) as img:
+        assert b"marker-equirectangular" in img.info.get("xmp", b"")
 
 
 def test_convert_to_webp_success(tmp_path):
-    """Test successful WebP conversion."""
+    """convert_to_webp converts a JPG file and removes the original."""
     jpg_path = tmp_path / "test.jpg"
-    jpg_path.write_bytes(b"fake jpg data")
+    jpg_path.write_bytes(_jpeg_bytes())
     webp_output = tmp_path / "test.webp"
 
-    mock_result = Mock()
-    mock_result.returncode = 0
-    mock_result.stderr = ""
+    webp_path = convert_to_webp(jpg_path, webp_output)
 
-    with patch("subprocess.run", return_value=mock_result):
-        webp_path = convert_to_webp(jpg_path, webp_output)
+    assert webp_path == webp_output
+    assert webp_output.exists()
+    assert not jpg_path.exists()  # Original should be deleted
 
-        assert webp_path is not None
-        assert webp_path.suffix == ".webp"
-        assert not jpg_path.exists()  # Original should be deleted
+
+def test_convert_to_webp_keeps_original_when_requested(tmp_path):
+    """delete_original=False leaves the source JPG in place."""
+    jpg_path = tmp_path / "test.jpg"
+    jpg_path.write_bytes(_jpeg_bytes())
+    webp_output = tmp_path / "test.webp"
+
+    convert_to_webp(jpg_path, webp_output, delete_original=False)
+
+    assert webp_output.exists()
+    assert jpg_path.exists()
 
 
 def test_convert_to_webp_failure(tmp_path):
-    """Test failed WebP conversion."""
+    """A non-image file fails conversion and keeps the original."""
     jpg_path = tmp_path / "test.jpg"
     jpg_path.write_bytes(b"fake jpg data")
     webp_output = tmp_path / "test.webp"
 
-    mock_result = Mock()
-    mock_result.returncode = 1
-    mock_result.stderr = "conversion failed"
+    webp_path = convert_to_webp(jpg_path, webp_output)
 
-    with patch("subprocess.run", return_value=mock_result):
-        webp_path = convert_to_webp(jpg_path, webp_output)
-
-        assert webp_path is None
-        assert jpg_path.exists()  # Original should still exist on failure
+    assert webp_path is None
+    assert jpg_path.exists()  # Original should still exist on failure
 
 
-def test_convert_to_webp_exception(tmp_path):
-    """Test WebP conversion with unexpected exception."""
-    jpg_path = tmp_path / "test.jpg"
-    jpg_path.write_bytes(b"fake jpg data")
+def test_convert_to_webp_missing_file(tmp_path):
+    """A missing source file returns None instead of raising."""
+    jpg_path = tmp_path / "nope.jpg"
     webp_output = tmp_path / "test.webp"
 
-    with patch("subprocess.run", side_effect=Exception("unexpected error")):
-        webp_path = convert_to_webp(jpg_path, webp_output)
-
-        assert webp_path is None
-        assert jpg_path.exists()
-
-
-def test_convert_to_webp_preserves_metadata(tmp_path):
-    """Test that cwebp is called with metadata preservation flag."""
-    jpg_path = tmp_path / "test.jpg"
-    jpg_path.write_bytes(b"fake jpg data")
-    webp_output = tmp_path / "test.webp"
-
-    mock_result = Mock()
-    mock_result.returncode = 0
-
-    with patch("subprocess.run", return_value=mock_result) as mock_run:
-        convert_to_webp(jpg_path, webp_output)
-
-        # Verify cwebp is called with -metadata all flag
-        call_args = mock_run.call_args[0][0]
-        assert "cwebp" in call_args
-        assert "-metadata" in call_args
-        assert "all" in call_args
-
-
-def test_convert_to_webp_creates_parent_dirs(tmp_path):
-    """Test that output directory is created if needed."""
-    jpg_path = tmp_path / "test.jpg"
-    jpg_path.write_bytes(b"fake jpg data")
-    webp_output = tmp_path / "nested" / "dir" / "test.webp"
-
-    mock_result = Mock()
-    mock_result.returncode = 0
-
-    with patch("subprocess.run", return_value=mock_result):
-        convert_to_webp(jpg_path, webp_output)
-
-        assert webp_output.parent.exists()
+    assert convert_to_webp(jpg_path, webp_output) is None

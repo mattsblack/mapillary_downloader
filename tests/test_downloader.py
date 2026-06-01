@@ -23,9 +23,9 @@ class FakeWorkerPool:
 
     instances = []
 
-    def __init__(self, worker_func, max_workers=16, monitoring_interval=10):
-        self.worker_func = worker_func
+    def __init__(self, max_workers=16, convert_workers=None, monitoring_interval=10):
         self.max_workers = max_workers
+        self.convert_workers = convert_workers
         self.monitoring_interval = monitoring_interval
         self.current_workers = 1
         self.started = False
@@ -60,8 +60,8 @@ class FakeWorkerPool:
 class InterruptAfterResultWorkerPool(FakeWorkerPool):
     """Worker pool that interrupts after one successful result is observed."""
 
-    def __init__(self, worker_func, max_workers=16, monitoring_interval=10):
-        super().__init__(worker_func, max_workers, monitoring_interval)
+    def __init__(self, max_workers=16, convert_workers=None, monitoring_interval=10):
+        super().__init__(max_workers, convert_workers, monitoring_interval)
         self.returned_result = False
 
     def get_result(self, timeout=None):
@@ -171,12 +171,14 @@ def test_download_user_data_submits_metadata_to_worker_pool(tmp_path):
     assert pool.shutdown_called
     assert len(pool.submitted) == 1
 
-    image, output_dir, quality, convert_webp, access_token = pool.submitted[0]
+    image, output_dir, quality, convert_webp, access_token, webp_quality, webp_method = pool.submitted[0]
     assert image["id"] == "img1"
     assert output_dir == str(downloader.staging_dir)
     assert quality == "original"
     assert not convert_webp
     assert access_token == "test-token"
+    assert isinstance(webp_quality, int)
+    assert isinstance(webp_method, int)
 
     assert "img1" in downloader.downloaded
     assert downloader.final_dir.exists()

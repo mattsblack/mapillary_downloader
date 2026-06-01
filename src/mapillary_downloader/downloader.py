@@ -14,7 +14,7 @@ from mapillary_downloader.finalizer import finalize_collection
 from mapillary_downloader.limits import DownloadLimits
 from mapillary_downloader.utils import format_size, format_time, get_cache_dir, safe_json_save
 from mapillary_downloader.ia_check import check_ia_exists
-from mapillary_downloader.worker import worker_process
+from mapillary_downloader.webp_converter import DEFAULT_WEBP_METHOD, DEFAULT_WEBP_QUALITY
 from mapillary_downloader.worker_pool import AdaptiveWorkerPool
 from mapillary_downloader.metadata_reader import MetadataReader
 from mapillary_downloader.logging_config import add_file_handler
@@ -56,11 +56,14 @@ class MapillaryDownloader:
         output_dir,
         username=None,
         quality=None,
-        max_workers=128,
+        max_workers=64,
         tar_sequences=True,
         convert_webp=False,
         check_ia=True,
         limits=None,
+        convert_workers=None,
+        webp_quality=DEFAULT_WEBP_QUALITY,
+        webp_method=DEFAULT_WEBP_METHOD,
     ):
         """Initialize the downloader.
 
@@ -69,10 +72,13 @@ class MapillaryDownloader:
             output_dir: Base directory to save downloads (final destination)
             username: Mapillary username (for collection directory)
             quality: Image quality (for collection directory)
-            max_workers: Maximum number of parallel workers (default: 128)
+            max_workers: Maximum number of parallel download (I/O) workers (default: 64)
             tar_sequences: Whether to tar sequence directories after download (default: True)
             convert_webp: Whether to convert images to WebP (affects collection name)
             check_ia: Whether to check if collection exists on Internet Archive (default: True)
+            convert_workers: Number of CPU-bound WebP convert workers (default: CPU count)
+            webp_quality: WebP quality 0-100 (default from webp_converter)
+            webp_method: WebP encode method 0-6 (default from webp_converter)
         """
         self.client = client
         self.base_output_dir = Path(output_dir)
@@ -83,6 +89,9 @@ class MapillaryDownloader:
         self.convert_webp = convert_webp
         self.check_ia = check_ia
         self.limits = limits or DownloadLimits()
+        self.convert_workers = convert_workers
+        self.webp_quality = webp_quality
+        self.webp_method = webp_method
 
         if username and quality:
             self.collection_id = CollectionId(username=username, quality=quality, is_webp=convert_webp)
@@ -303,6 +312,8 @@ class MapillaryDownloader:
                 self.quality,
                 self.convert_webp,
                 self.client.access_token,
+                self.webp_quality,
+                self.webp_method,
             )
             pool.submit(work_item)
             submitted += 1
@@ -353,7 +364,11 @@ class MapillaryDownloader:
         api_complete = reader.is_complete
 
         # Step 2: Start worker pool
-        pool = AdaptiveWorkerPool(worker_process, max_workers=self.max_workers, monitoring_interval=10)
+        pool = AdaptiveWorkerPool(
+            max_workers=self.max_workers,
+            convert_workers=self.convert_workers,
+            monitoring_interval=10,
+        )
         pool.start()
 
         # Step 3: Download images from metadata file while fetching new from API
@@ -635,8 +650,7 @@ class MapillaryDownloader:
                 include_master_state=is_final,
                 chunk_title=f"Mapillary images by {self.username} ({chunk_name})",
                 chunk_description=(
-                    f"Intermediate Mapillary download chunk {chunk_name}. "
-                    "Master metadata is kept with the final chunk."
+                    f"Intermediate Mapillary download chunk {chunk_name}. Master metadata is kept with the final chunk."
                 ),
                 chunk_username=self.username,
             )

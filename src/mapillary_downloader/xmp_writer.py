@@ -54,6 +54,23 @@ def build_xmp_packet(metadata):
     )
 
 
+def build_xmp_bytes(metadata):
+    """Build GPano XMP packet bytes for a panorama, or None if not applicable.
+
+    Args:
+        metadata: Dictionary of metadata from Mapillary API
+
+    Returns:
+        UTF-8 encoded XMP packet bytes for panoramas with known dimensions,
+        otherwise None.
+    """
+    if not metadata.get("is_pano"):
+        return None
+    if not metadata.get("width") or not metadata.get("height"):
+        return None
+    return build_xmp_packet(metadata).encode("utf-8")
+
+
 def write_xmp_to_image(image_path, metadata):
     """Write XMP GPano metadata to a JPEG image for panoramas.
 
