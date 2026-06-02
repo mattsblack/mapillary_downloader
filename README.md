@@ -39,7 +39,7 @@ mapillary-downloader --output ./downloads USERNAME1
 | `--max-workers` | Maximum number of parallel download workers  | `64`               |
 | `--convert-workers` | Number of CPU-bound WebP convert workers | CPU count          |
 | `--webp-quality` | WebP quality 0-100 (higher = larger/better) | `80`              |
-| `--webp-method` | WebP encode method 0 (fast) - 6 (slow/best)  | `4`                |
+| `--webp-method` | WebP encode method 0 (fast) - 6 (slow/best), or `auto` | `auto`   |
 | `--max-size`    | Approximate output batch size, or `none`     | `900GB`            |
 | `--min-free-space` | Stop before disk fills, or `none`         | `50GB`             |
 | `--max-images`  | Approximate output batch image count         | `None`             |
@@ -67,9 +67,15 @@ required), and runs as a separate stage from downloading: many I/O-bound
 download workers feed a CPU-sized pool of convert workers, so the network and
 CPUs stay busy at the same time.
 
+On CPU-bound machines the WebP encode (not the download) is the throughput
+bottleneck, and the encode **method** is the dominant cost: method `0` is
+roughly 2x faster than method `4` for a small increase in file size (visual
+quality is set separately by `--webp-quality`). By default `--webp-method auto`
+picks a faster method on low-core machines (e.g. method `0` on 2 cores) and a
+smaller-file method on larger ones. Set `--webp-method` explicitly to override.
+
 Tune the trade-offs with `--convert-workers` (defaults to your CPU count),
-`--webp-quality`, and `--webp-method` (lower is faster, higher compresses
-better).
+`--webp-quality`, and `--webp-method`.
 
 To disable WebP conversion and keep original JPEGs, use `--no-webp`:
 

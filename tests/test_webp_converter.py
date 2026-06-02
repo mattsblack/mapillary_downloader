@@ -4,10 +4,13 @@ import io
 
 from PIL import Image
 
+from unittest.mock import patch
+
 from mapillary_downloader.webp_converter import (
     check_webp_available,
     convert_to_webp,
     encode_webp,
+    resolve_webp_method,
 )
 
 
@@ -21,6 +24,24 @@ def _jpeg_bytes(size=(64, 48), color="red"):
 def test_check_webp_available():
     """Pillow in the test environment should support WebP."""
     assert check_webp_available() is True
+
+
+def test_resolve_webp_method_explicit():
+    """An explicit method is returned as an int and clamped to 0-6."""
+    assert resolve_webp_method(3) == 3
+    assert resolve_webp_method("5") == 5
+    assert resolve_webp_method(9) == 6
+    assert resolve_webp_method(-2) == 0
+
+
+def test_resolve_webp_method_auto_scales_with_cpu():
+    """'auto' picks a faster method on low-core machines."""
+    with patch("mapillary_downloader.webp_converter.os.cpu_count", return_value=2):
+        assert resolve_webp_method("auto") == 0
+    with patch("mapillary_downloader.webp_converter.os.cpu_count", return_value=4):
+        assert resolve_webp_method(None) == 2
+    with patch("mapillary_downloader.webp_converter.os.cpu_count", return_value=16):
+        assert resolve_webp_method("auto") == 4
 
 
 def test_encode_webp_success(tmp_path):

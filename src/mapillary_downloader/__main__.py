@@ -11,9 +11,9 @@ from mapillary_downloader.ia_stats import show_stats
 from mapillary_downloader.limits import DownloadLimits, parse_size
 from mapillary_downloader.logging_config import setup_logging
 from mapillary_downloader.webp_converter import (
-    DEFAULT_WEBP_METHOD,
     DEFAULT_WEBP_QUALITY,
     check_webp_available,
+    resolve_webp_method,
 )
 
 
@@ -67,9 +67,12 @@ def main():
     )
     parser.add_argument(
         "--webp-method",
-        type=int,
-        default=DEFAULT_WEBP_METHOD,
-        help=f"WebP encode method 0 (fast) - 6 (slow/best) (default: {DEFAULT_WEBP_METHOD})",
+        default="auto",
+        help=(
+            "WebP encode method 0 (fast) - 6 (slow/best), or 'auto' to pick "
+            "based on CPU count (default: auto). Lower is faster but larger; "
+            "this is the main throughput lever on low-core machines."
+        ),
     )
     parser.add_argument(
         "--max-size",
@@ -162,6 +165,12 @@ def main():
     # WebP is enabled by default, disabled with --no-webp
     convert_webp = not args.no_webp
 
+    try:
+        webp_method = resolve_webp_method(args.webp_method)
+    except (TypeError, ValueError):
+        logger.error("Error: --webp-method must be an integer 0-6 or 'auto'")
+        sys.exit(1)
+
     # Check that Pillow has WebP support if WebP conversion is enabled
     if convert_webp:
         if not check_webp_available():
@@ -169,7 +178,12 @@ def main():
                 "Error: Pillow was built without WebP support. Reinstall Pillow with WebP enabled or use --no-webp"
             )
             sys.exit(1)
-        logger.info("WebP conversion enabled - images will be converted in-process during download")
+        logger.info(
+            "WebP conversion enabled in-process (quality %d, method %d, %d convert workers)",
+            args.webp_quality,
+            webp_method,
+            args.convert_workers,
+        )
 
     try:
         client = MapillaryClient(args.token)
@@ -197,7 +211,7 @@ def main():
                     limits=limits,
                     convert_workers=args.convert_workers,
                     webp_quality=args.webp_quality,
-                    webp_method=args.webp_method,
+                    webp_method=webp_method,
                 )
                 downloader.download_user_data(bbox=bbox)
             except Exception as e:
