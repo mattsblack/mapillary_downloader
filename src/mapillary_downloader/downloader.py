@@ -230,6 +230,7 @@ class MapillaryDownloader:
             if not self.paths.chunks_file.exists() and check_ia_exists(session, self.collection_name):
                 logger.info("Collection already exists on archive.org, skipping download")
                 self._close_file_handler()
+                self.chunk_manifest = None
                 return None
             while check_ia_exists(session, self.chunk_manifest.next_name()):
                 logger.info("Chunk already exists on archive.org: %s", self.chunk_manifest.next_name())
