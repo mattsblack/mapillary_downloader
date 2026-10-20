@@ -17,9 +17,10 @@ from collections import namedtuple
 from datetime import datetime
 from pathlib import Path
 
-from mapillary_downloader.exif_writer import build_exif_bytes, write_exif_to_image
+from mapillary_downloader.exif_writer import build_exif_bytes
+from mapillary_downloader.jpeg_metadata import insert_metadata
 from mapillary_downloader.webp_converter import encode_webp
-from mapillary_downloader.xmp_writer import build_xmp_bytes, write_xmp_to_image
+from mapillary_downloader.xmp_writer import build_xmp_bytes
 from mapillary_downloader.utils import http_get_with_retry
 
 # Work passed from the download stage to the convert stage.
@@ -105,9 +106,9 @@ def download_and_prepare(work_item, session, on_download=None):
         if "captured_at" in image_data:
             mtime = image_data["captured_at"] / 1000
 
+        exif_bytes = build_exif_bytes(image_data, source_bytes=jpeg_bytes)
+        xmp_bytes = build_xmp_bytes(image_data)
         if convert_webp:
-            exif_bytes = build_exif_bytes(image_data, source_bytes=jpeg_bytes)
-            xmp_bytes = build_xmp_bytes(image_data)
             final_path = img_dir / f"{image_id}.webp"
             task = ConvertTask(
                 image_id=image_id,
@@ -125,11 +126,7 @@ def download_and_prepare(work_item, session, on_download=None):
 
         # Non-WebP path: write the JPEG and its metadata directly.
         final_path = img_dir / f"{image_id}.jpg"
-        with open(final_path, "wb") as f:
-            f.write(jpeg_bytes)
-
-        write_exif_to_image(final_path, image_data)
-        write_xmp_to_image(final_path, image_data)
+        final_path.write_bytes(insert_metadata(jpeg_bytes, exif=exif_bytes, xmp=xmp_bytes))
 
         if mtime is not None:
             os.utime(final_path, (mtime, mtime))
