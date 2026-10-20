@@ -136,6 +136,8 @@ saved together, avoiding full metadata rescans and periodic full progress
 rewrites. Existing `progress.json` files are imported automatically; a portable
 JSON snapshot is exported for the final collection. Keep the checkpoint with
 the staging metadata between chunk runs. Failed images remain eligible for retry.
+Queued and active image IDs are deduplicated as well as completed IDs, so replayed
+API pages do not start concurrent downloads or conversions of the same image.
 
 Use `--max-size none` to restore the old unbounded single-collection behavior.
 `--min-free-space` is an emergency guard: if free space falls below the limit,

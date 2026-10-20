@@ -168,6 +168,7 @@ def test_resume_retries_failure_without_rescanning_acknowledged_metadata(tmp_pat
                 first.download_user_data()
         assert first._metadata_position == metadata.stat().st_size
         assert first.downloaded == {"img2"}
+        assert first._pending_ids == set()
         resumed = MapillaryDownloader(client, tmp_path / "output", **kwargs)
         assert resumed._metadata_position == metadata.stat().st_size
         with (
@@ -177,6 +178,7 @@ def test_resume_retries_failure_without_rescanning_acknowledged_metadata(tmp_pat
             resumed.download_user_data()
     assert [item[0]["id"] for item in FakeWorkerPool.instances[-1].submitted] == ["img1"]
     assert resumed.downloaded == {"img1", "img2"}
+    assert resumed._pending_ids == set()
     client.get_user_images.assert_not_called()
 
 
@@ -195,6 +197,76 @@ def test_partial_metadata_record_is_not_checkpointed(tmp_path):
         assert downloader._submit_metadata_batch(stream, "thumb_original_url", pool, lambda: None, 0) == (1, 0)
         assert downloader._metadata_position == len(stream.getvalue())
         downloader._close_file_handler()
+
+
+def test_duplicate_rows_reserve_only_one_download_until_completed(tmp_path):
+    import io
+
+    with patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path):
+        downloader = MapillaryDownloader(Mock(access_token="token"), tmp_path, quality="original")
+        image = {"id": "duplicate", "thumb_original_url": "url"}
+        stream = io.StringIO((json.dumps(image) + "\n") * 3)
+        downloader.metadata_file.write_text(stream.getvalue())
+        pool = FakeWorkerPool()
+        submitted, skipped = downloader._submit_metadata_batch(stream, "thumb_original_url", pool, lambda: None, 0)
+        assert (submitted, skipped) == (1, 2)
+        assert len(pool.submitted) == 1
+        assert downloader._pending_ids == {"duplicate"}
+        downloader._save_progress(export=False)
+        resumed = MapillaryDownloader(Mock(access_token="token"), tmp_path, quality="original")
+        assert resumed._metadata_position == len(stream.getvalue())
+        assert resumed._retry_images == {"duplicate": image}
+        assert resumed._pending_ids == set()
+        downloader._close_file_handler()
+        resumed._close_file_handler()
+
+
+def test_interrupted_submission_keeps_retry_metadata_and_releases_reservation(tmp_path):
+    with patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path):
+        downloader = MapillaryDownloader(Mock(access_token="token"), tmp_path, quality="original")
+        image = {"id": "interrupted", "thumb_original_url": "url"}
+        pool = Mock()
+        pool.submit.side_effect = KeyboardInterrupt
+        with pytest.raises(KeyboardInterrupt):
+            downloader._submit_image(pool, image)
+        assert downloader._pending_ids == set()
+        assert downloader._retry_images == {"interrupted": image}
+        downloader._close_file_handler()
+
+
+def test_duplicate_rows_with_delayed_results_complete_once(tmp_path):
+    class DelayedPool(FakeWorkerPool):
+        finished = False
+
+        def get_result(self, timeout=None):
+            return super().get_result(timeout) if self.finished else None
+
+        def finish_submissions(self):
+            self.finished = True
+            return super().finish_submissions()
+
+    staging = tmp_path / "cache" / "mapillary-user-original"
+    staging.mkdir(parents=True)
+    row = json.dumps({"id": "duplicate", "thumb_original_url": "url"}) + "\n"
+    (staging / "metadata.jsonl").write_text(row * 3 + '{"__complete__":true}\n')
+    with (
+        patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"),
+        patch("mapillary_downloader.downloader.AdaptiveWorkerPool", DelayedPool),
+        patch("mapillary_downloader.downloader.finalize_collection", side_effect=fake_finalize_collection),
+    ):
+        downloader = MapillaryDownloader(
+            Mock(access_token="token"),
+            tmp_path / "output",
+            username="user",
+            quality="original",
+            check_ia=False,
+            limits=DownloadLimits(max_size_bytes=None, min_free_space_bytes=None),
+        )
+        downloader.download_user_data()
+    assert len(DelayedPool.instances[-1].submitted) == 1
+    assert downloader.downloaded == {"duplicate"}
+    assert downloader._pending_ids == set()
+    assert downloader._retry_images == {}
 
 
 def test_chunk_resume_does_not_advance_past_limit_boundary(tmp_path):

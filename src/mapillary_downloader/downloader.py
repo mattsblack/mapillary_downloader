@@ -137,6 +137,7 @@ class MapillaryDownloader:
         self.progress_store = ProgressStore(self.staging_dir / paths.PROGRESS_DB, self.quality)
         self._uncheckpointed = set()
         self._retry_images = {}
+        self._pending_ids = set()
         self._metadata_position = 0
         self.downloaded = self._load_progress()
         self._metadata_position = self.progress_store.resume_offset(self.metadata_file)
@@ -266,6 +267,31 @@ class MapillaryDownloader:
 
         safe_json_save(self.progress_file, progress)
 
+    def _submit_image(self, pool, image):
+        """Reserve an ID before queuing it, preventing simultaneous duplicates."""
+        image_id = image["id"]
+        if image_id in self.downloaded or image_id in self._pending_ids:
+            return False
+        self._retry_images[image_id] = image
+        self._pending_ids.add(image_id)
+        try:
+            pool.submit(
+                (
+                    image,
+                    str(self.output_dir),
+                    self.quality,
+                    self.convert_webp,
+                    self.client.access_token,
+                    self.webp_quality,
+                    self.webp_method,
+                )
+            )
+        except BaseException:
+            self._pending_ids.discard(image_id)
+            # Keep retry metadata if submission is interrupted.
+            raise
+        return True
+
     def _submit_metadata_batch(
         self,
         file_handle,
@@ -320,7 +346,7 @@ class MapillaryDownloader:
                 self._metadata_position = file_handle.tell()
                 continue
 
-            if image_id in self.downloaded:
+            if image_id in self.downloaded or image_id in self._pending_ids:
                 skipped += 1
                 self._metadata_position = file_handle.tell()
                 continue
@@ -333,19 +359,11 @@ class MapillaryDownloader:
                 file_handle.seek(position)
                 break
 
-            work_item = (
-                image,
-                str(self.output_dir),
-                self.quality,
-                self.convert_webp,
-                self.client.access_token,
-                self.webp_quality,
-                self.webp_method,
-            )
-            self._retry_images[image_id] = image
-            pool.submit(work_item)
+            if self._submit_image(pool, image):
+                submitted += 1
+            else:
+                skipped += 1
             self._metadata_position = file_handle.tell()
-            submitted += 1
 
             total = base_submitted + submitted
             if total % 1000 == 0:
@@ -498,6 +516,7 @@ class MapillaryDownloader:
                     else:
                         image_id, bytes_dl, output_bytes, sequence_id, success, error_msg = result
 
+                    self._pending_ids.discard(image_id)
                     if success:
                         self.downloaded.add(image_id)
                         self._uncheckpointed.add(image_id)
@@ -559,18 +578,8 @@ class MapillaryDownloader:
                     continue
                 if should_stop_submitting(image):
                     break
-                pool.submit(
-                    (
-                        image,
-                        str(self.output_dir),
-                        self.quality,
-                        self.convert_webp,
-                        self.client.access_token,
-                        self.webp_quality,
-                        self.webp_method,
-                    )
-                )
-                submitted += 1
+                if self._submit_image(pool, image):
+                    submitted += 1
                 process_results()
 
             # Tail the metadata file and submit to workers
@@ -624,6 +633,7 @@ class MapillaryDownloader:
                     sequence_id = None
                 else:
                     image_id, bytes_dl, output_bytes, sequence_id, success, error_msg = result
+                self._pending_ids.discard(image_id)
                 completed += 1
 
                 if success:
