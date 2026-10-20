@@ -3,6 +3,7 @@
 import gzip
 import json
 import logging
+from collections import deque
 from pathlib import Path
 
 logger = logging.getLogger("mapillary_downloader")
@@ -37,29 +38,31 @@ class MetadataReader:
         # Check last few lines for completion marker (it should be at the end)
         try:
             if self.metadata_file.suffix == ".gz":
-                file_handle = gzip.open(self.metadata_file, "rt")
+                # Gzip is not independently seekable; keep the streaming path.
+                with gzip.open(self.metadata_file, "rt") as f:
+                    lines = deque(f, maxlen=10)
             else:
-                file_handle = open(self.metadata_file)
+                with open(self.metadata_file, "rb") as f:
+                    f.seek(0, 2)
+                    position = f.tell()
+                    tail = b""
+                    while position > 0 and len(tail.splitlines()) < 11:
+                        size = min(position, 65536)
+                        position -= size
+                        f.seek(position)
+                        tail = f.read(size) + tail
+                    lines = tail.splitlines()[-10:]
 
-            with file_handle as f:
-                # Read last 10 lines to find completion marker
-                lines = []
-                for line in f:
-                    lines.append(line)
-                    if len(lines) > 10:
-                        lines.pop(0)
-
-                # Check if any of the last lines is the completion marker
-                for line in reversed(lines):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        data = json.loads(line)
-                        if data.get("__complete__"):
-                            return True
-                    except json.JSONDecodeError:
-                        continue
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    if data.get("__complete__"):
+                        return True
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
 
             return False
         except Exception:

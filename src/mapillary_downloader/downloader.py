@@ -17,6 +17,7 @@ from mapillary_downloader.ia_check import check_ia_exists
 from mapillary_downloader.webp_converter import DEFAULT_WEBP_METHOD, DEFAULT_WEBP_QUALITY
 from mapillary_downloader.worker_pool import AdaptiveWorkerPool
 from mapillary_downloader.metadata_reader import MetadataReader
+from mapillary_downloader.progress import ProgressStore
 from mapillary_downloader.logging_config import add_file_handler
 
 logger = logging.getLogger("mapillary_downloader")
@@ -133,7 +134,12 @@ class MapillaryDownloader:
         self.metadata_file = self.paths.metadata_file
         self.progress_file = self.paths.progress_file
         self.cursor_file = self.paths.cursor_file
+        self.progress_store = ProgressStore(self.staging_dir / paths.PROGRESS_DB, self.quality)
+        self._uncheckpointed = set()
+        self._retry_images = {}
+        self._metadata_position = 0
         self.downloaded = self._load_progress()
+        self._metadata_position = self.progress_store.resume_offset(self.metadata_file)
         self.baseline_bytes = self._baseline_bytes()
         self._last_save_time = time.time()
 
@@ -147,11 +153,8 @@ class MapillaryDownloader:
 
     def _load_progress(self):
         """Load previously downloaded image IDs for this quality."""
-        if self.progress_file.exists():
-            with open(self.progress_file) as f:
-                data = json.load(f)
-            return set(data.get(str(self.quality), []))
-        return set()
+        completed, self._retry_images = self.progress_store.load(self.progress_file)
+        return completed
 
     def _baseline_bytes(self):
         """Sum sizes of already-downloaded payload files."""
@@ -160,6 +163,7 @@ class MapillaryDownloader:
             paths.METADATA_JSONL,
             paths.METADATA_JSONL_GZ,
             paths.PROGRESS_JSON,
+            paths.PROGRESS_DB,
             paths.API_CURSOR,
             paths.CHUNKS_JSON,
             paths.IA_THUMBNAIL,
@@ -242,8 +246,15 @@ class MapillaryDownloader:
         logger.info("Chunked output enabled: next chunk %s", self.chunk_manifest.next_name())
         return self.chunk_manifest
 
-    def _save_progress(self):
-        """Save progress to disk atomically, per-quality."""
+    def _save_progress(self, export=True):
+        """Checkpoint new IDs and retries atomically; optionally export JSON."""
+        # The normal download path records only new completions. Explicit JSON
+        # exports also support callers that directly update the public ID set.
+        completed = self.downloaded if export else self._uncheckpointed
+        self.progress_store.save(completed, self._retry_images, self.metadata_file, self._metadata_position)
+        self._uncheckpointed.clear()
+        if not export:
+            return
         progress = {}
         if self.progress_file.exists():
             with open(self.progress_file) as f:
@@ -280,33 +291,46 @@ class MapillaryDownloader:
         skipped = 0
 
         while True:
+            position = file_handle.tell()
             line = file_handle.readline()
             if not line:
                 break
+            # An API write may be observed mid-record. Retry it on the next
+            # tail pass rather than checkpointing past a partial JSON object.
+            if not line.endswith(b"\n" if isinstance(line, bytes) else "\n"):
+                file_handle.seek(position)
+                break
             line = line.strip()
             if not line:
+                self._metadata_position = file_handle.tell()
                 continue
 
             try:
                 image = json.loads(line)
             except json.JSONDecodeError:
+                self._metadata_position = file_handle.tell()
                 continue
 
             if image.get("__complete__"):
+                self._metadata_position = file_handle.tell()
                 continue
 
             image_id = image.get("id")
             if not image_id:
+                self._metadata_position = file_handle.tell()
                 continue
 
             if image_id in self.downloaded:
                 skipped += 1
+                self._metadata_position = file_handle.tell()
                 continue
 
             if not image.get(quality_field):
+                self._metadata_position = file_handle.tell()
                 continue
 
             if should_stop_submitting and should_stop_submitting(image):
+                file_handle.seek(position)
                 break
 
             work_item = (
@@ -318,7 +342,9 @@ class MapillaryDownloader:
                 self.webp_quality,
                 self.webp_method,
             )
+            self._retry_images[image_id] = image
             pool.submit(work_item)
+            self._metadata_position = file_handle.tell()
             submitted += 1
 
             total = base_submitted + submitted
@@ -453,7 +479,7 @@ class MapillaryDownloader:
 
             # Step 3b: Tail metadata file and submit to workers
             logger.debug("Starting metadata tail and download queue feeder")
-            last_position = 0
+            last_position = self._metadata_position
 
             # Helper to process results from queue
             def process_results():
@@ -474,6 +500,8 @@ class MapillaryDownloader:
 
                     if success:
                         self.downloaded.add(image_id)
+                        self._uncheckpointed.add(image_id)
+                        self._retry_images.pop(image_id, None)
                         downloaded_count += 1
                         total_bytes += bytes_dl
                         total_output_bytes += output_bytes
@@ -492,7 +520,7 @@ class MapillaryDownloader:
                             pool.check_throughput(downloaded_count)
                             # Save progress every 5 minutes
                             if time.time() - self._last_save_time >= 300:
-                                self._save_progress()
+                                self._save_progress(export=False)
                                 self._last_save_time = time.time()
 
                         if self.limits.max_size_bytes is not None:
@@ -523,10 +551,32 @@ class MapillaryDownloader:
                 last_submitted_sequence = sequence_id
                 return False
 
+            # Checkpointed unfinished work is retried before reading new rows.
+            # Snapshot values: result handling removes successful retries.
+            for image in list(self._retry_images.values()):
+                if image["id"] in self.downloaded:
+                    self._retry_images.pop(image["id"], None)
+                    continue
+                if should_stop_submitting(image):
+                    break
+                pool.submit(
+                    (
+                        image,
+                        str(self.output_dir),
+                        self.quality,
+                        self.convert_webp,
+                        self.client.access_token,
+                        self.webp_quality,
+                        self.webp_method,
+                    )
+                )
+                submitted += 1
+                process_results()
+
             # Tail the metadata file and submit to workers
             while True:
                 if self.metadata_file.exists():
-                    with open(self.metadata_file) as f:
+                    with open(self.metadata_file, "rb") as f:
                         f.seek(last_position)
                         batch_submitted, batch_skipped = self._submit_metadata_batch(
                             f, quality_field, pool, process_results, submitted, should_stop_submitting
@@ -544,7 +594,7 @@ class MapillaryDownloader:
             # The API thread may have written its final lines after the last
             # tail read but before it set the completion event.
             if self.metadata_file.exists():
-                with open(self.metadata_file) as f:
+                with open(self.metadata_file, "rb") as f:
                     f.seek(last_position)
                     batch_submitted, batch_skipped = self._submit_metadata_batch(
                         f, quality_field, pool, process_results, submitted, should_stop_submitting
@@ -578,6 +628,8 @@ class MapillaryDownloader:
 
                 if success:
                     self.downloaded.add(image_id)
+                    self._uncheckpointed.add(image_id)
+                    self._retry_images.pop(image_id, None)
                     downloaded_count += 1
                     total_bytes += bytes_dl
                     total_output_bytes += output_bytes
@@ -592,7 +644,7 @@ class MapillaryDownloader:
                         pool.check_throughput(downloaded_count)
                         # Save progress every 5 minutes
                         if time.time() - self._last_save_time >= 300:
-                            self._save_progress()
+                            self._save_progress(export=False)
                             self._last_save_time = time.time()
                     if self.limits.max_size_bytes is not None:
                         if self.baseline_bytes + total_output_bytes >= self.limits.max_size_bytes:
@@ -608,7 +660,7 @@ class MapillaryDownloader:
         finally:
             # Shutdown worker pool
             pool.shutdown()
-            self._save_progress()
+            self._save_progress(export=not self.chunked)
 
         elapsed = time.time() - start_time
 
@@ -635,10 +687,21 @@ class MapillaryDownloader:
             self._close_file_handler()
             raise api_fetch_error[0]
 
+        if self._retry_images and (not self.chunked or downloaded_count == 0):
+            self._close_file_handler()
+            raise RuntimeError(f"{len(self._retry_images)} images remain unfinished; re-run to retry")
+
         if self.chunked:
             chunk_name = self.chunk_manifest.next_name()
             final_dir = self.base_output_dir / chunk_name
-            is_final = api_fetch_complete.is_set() and not api_fetch_stopped_early[0] and not batch_limit_reached
+            is_final = (
+                api_fetch_complete.is_set()
+                and not api_fetch_stopped_early[0]
+                and not batch_limit_reached
+                and not self._retry_images
+            )
+            if is_final:
+                self._save_progress()
             self.chunk_manifest.mark_finalizing(
                 chunk_name,
                 images=downloaded_count,
@@ -669,7 +732,7 @@ class MapillaryDownloader:
                 logger.info("Chunked download complete")
             else:
                 self.output_dir.mkdir(parents=True, exist_ok=True)
-                logger.info("Batch limit reached, exiting cleanly. Re-run to continue.")
+                logger.info("Batch paused, exiting cleanly. Re-run to continue.")
             return
 
         finalize_collection(

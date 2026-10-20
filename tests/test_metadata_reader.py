@@ -71,3 +71,41 @@ def test_metadata_reader_many_lines(tmp_path):
 
     reader = MetadataReader(metadata_file)
     assert reader.is_complete
+
+
+def test_large_file_completion_reads_tail_only(tmp_path):
+    """A large history is not scanned during a plain JSONL completion check."""
+    from unittest.mock import patch
+
+    metadata_file = tmp_path / "metadata.jsonl"
+    metadata_file.write_bytes(b'{"id":"old"}\n' * 100_000 + b'{"__complete__":true}\n')
+    reads = []
+    original_open = open
+
+    class TailOnly:
+        def __enter__(self):
+            self.file = original_open(metadata_file, "rb")
+            return self
+
+        def __exit__(self, *args):
+            self.file.close()
+
+        def seek(self, *args):
+            return self.file.seek(*args)
+
+        def tell(self):
+            return self.file.tell()
+
+        def read(self, size):
+            reads.append(size)
+            return self.file.read(size)
+
+    with patch("mapillary_downloader.metadata_reader.open", return_value=TailOnly()):
+        assert MetadataReader(metadata_file).is_complete
+    assert sum(reads) == 65536
+
+
+def test_completion_marker_outside_last_ten_lines_is_ignored(tmp_path):
+    metadata_file = tmp_path / "metadata.jsonl"
+    metadata_file.write_text('{"__complete__":true}\n' + '{"id":"later"}\n' * 10)
+    assert not MetadataReader(metadata_file).is_complete

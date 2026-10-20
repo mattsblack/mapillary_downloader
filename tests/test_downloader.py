@@ -136,6 +136,92 @@ def test_save_progress(tmp_path):
         assert "img1" in data["original"]
 
 
+def test_resume_retries_failure_without_rescanning_acknowledged_metadata(tmp_path):
+    """A failed early row retries even when the saved offset is at EOF."""
+
+    class FailingPool(FakeWorkerPool):
+        def submit(self, item):
+            if item is None:
+                return
+            super().submit(item)
+            if item[0]["id"] == "img1":
+                self.results[-1] = ("img1", 0, False, "temporary failure")
+
+    client = Mock(access_token="token")
+    staging = tmp_path / "cache" / "mapillary-user-original"
+    staging.mkdir(parents=True)
+    metadata = staging / "metadata.jsonl"
+    metadata.write_text(
+        "".join(json.dumps({"id": f"img{i}", "thumb_original_url": "url"}) + "\n" for i in (1, 2))
+        + '{"__complete__":true}\n'
+    )
+    kwargs = dict(
+        username="user",
+        quality="original",
+        check_ia=False,
+        limits=DownloadLimits(max_size_bytes=None, min_free_space_bytes=None),
+    )
+    with patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"):
+        first = MapillaryDownloader(client, tmp_path / "output", **kwargs)
+        with patch("mapillary_downloader.downloader.AdaptiveWorkerPool", FailingPool):
+            with pytest.raises(RuntimeError, match="re-run to retry"):
+                first.download_user_data()
+        assert first._metadata_position == metadata.stat().st_size
+        assert first.downloaded == {"img2"}
+        resumed = MapillaryDownloader(client, tmp_path / "output", **kwargs)
+        assert resumed._metadata_position == metadata.stat().st_size
+        with (
+            patch("mapillary_downloader.downloader.AdaptiveWorkerPool", FakeWorkerPool),
+            patch("mapillary_downloader.downloader.finalize_collection", side_effect=fake_finalize_collection),
+        ):
+            resumed.download_user_data()
+    assert [item[0]["id"] for item in FakeWorkerPool.instances[-1].submitted] == ["img1"]
+    assert resumed.downloaded == {"img1", "img2"}
+    client.get_user_images.assert_not_called()
+
+
+def test_partial_metadata_record_is_not_checkpointed(tmp_path):
+    import io
+
+    with patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path):
+        downloader = MapillaryDownloader(Mock(access_token="token"), tmp_path, quality="original")
+        stream = io.BytesIO(b'{"id":"img1","thumb_original_url":"url"')
+        pool = FakeWorkerPool()
+        assert downloader._submit_metadata_batch(stream, "thumb_original_url", pool, lambda: None, 0) == (0, 0)
+        assert stream.tell() == downloader._metadata_position == 0
+        stream.seek(0, 2)
+        stream.write(b"}\n")
+        stream.seek(0)
+        assert downloader._submit_metadata_batch(stream, "thumb_original_url", pool, lambda: None, 0) == (1, 0)
+        assert downloader._metadata_position == len(stream.getvalue())
+        downloader._close_file_handler()
+
+
+def test_chunk_resume_does_not_advance_past_limit_boundary(tmp_path):
+    staging = tmp_path / "cache" / "mapillary-user-original"
+    staging.mkdir(parents=True)
+    rows = [json.dumps({"id": f"img{i}", "sequence": f"seq{i}", "thumb_original_url": "url"}) + "\n" for i in (1, 2, 3)]
+    (staging / "metadata.jsonl").write_text("".join(rows) + '{"__complete__":true}\n')
+    with (
+        patch("mapillary_downloader.downloader.get_cache_dir", return_value=tmp_path / "cache"),
+        patch("mapillary_downloader.downloader.AdaptiveWorkerPool", FakeWorkerPool),
+        patch("mapillary_downloader.downloader.finalize_collection", side_effect=fake_finalize_collection),
+    ):
+        for i in (1, 2):
+            downloader = MapillaryDownloader(
+                Mock(access_token="token"),
+                tmp_path / "output",
+                username="user",
+                quality="original",
+                check_ia=False,
+                limits=DownloadLimits(max_size_bytes=None, min_free_space_bytes=None, max_images=1),
+            )
+            downloader.download_user_data()
+            assert [item[0]["id"] for item in FakeWorkerPool.instances[-1].submitted] == [f"img{i}"]
+            assert downloader._metadata_position == sum(len(row) for row in rows[:i])
+            assert not downloader.progress_file.exists()  # No full JSON rewrite for intermediate chunks.
+
+
 def test_download_user_data_submits_metadata_to_worker_pool(tmp_path):
     """Test download orchestration without spawning multiprocessing workers."""
     FakeWorkerPool.instances = []

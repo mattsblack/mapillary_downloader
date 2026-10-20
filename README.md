@@ -130,6 +130,13 @@ The master resume state stays in the cache directory until the user download is
 complete, so finalized batches can be uploaded or moved away before rerunning.
 Chunks are resume-safe output batches, not chronological partitions.
 
+Resume checkpoints use `.progress.sqlite3` in the staging directory. New
+completed IDs, unfinished image metadata, and the metadata read offset are
+saved together, avoiding full metadata rescans and periodic full progress
+rewrites. Existing `progress.json` files are imported automatically; a portable
+JSON snapshot is exported for the final collection. Keep the checkpoint with
+the staging metadata between chunk runs. Failed images remain eligible for retry.
+
 Use `--max-size none` to restore the old unbounded single-collection behavior.
 `--min-free-space` is an emergency guard: if free space falls below the limit,
 the downloader stops without finalizing the current payload.
