@@ -64,6 +64,7 @@ class MapillaryDownloader:
         convert_workers=None,
         webp_quality=DEFAULT_WEBP_QUALITY,
         webp_method=DEFAULT_WEBP_METHOD,
+        adaptive_workers=True,
     ):
         """Initialize the downloader.
 
@@ -92,6 +93,7 @@ class MapillaryDownloader:
         self.convert_workers = convert_workers
         self.webp_quality = webp_quality
         self.webp_method = webp_method
+        self.adaptive_workers = adaptive_workers
 
         if username and quality:
             self.collection_id = CollectionId(username=username, quality=quality, is_webp=convert_webp)
@@ -369,6 +371,7 @@ class MapillaryDownloader:
             max_workers=self.max_workers,
             convert_workers=self.convert_workers,
             monitoring_interval=10,
+            adaptive=self.adaptive_workers,
         )
         pool.start()
 
@@ -552,7 +555,7 @@ class MapillaryDownloader:
 
             # Send shutdown signals
             logger.debug(f"Submitted {submitted:,} images, waiting for workers")
-            for _ in range(pool.current_workers):
+            for _ in range(pool.finish_submissions()):
                 pool.submit(None)
 
             # Collect remaining results

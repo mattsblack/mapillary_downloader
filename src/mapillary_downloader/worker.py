@@ -12,6 +12,7 @@ and CPU-bound WebP encoding can each run at their own ideal concurrency:
 """
 
 import os
+import time
 from collections import namedtuple
 from datetime import datetime
 from pathlib import Path
@@ -58,7 +59,7 @@ def _image_dir(output_dir, image_data):
     return img_dir, sequence_id
 
 
-def download_and_prepare(work_item, session):
+def download_and_prepare(work_item, session, on_download=None):
     """Download an image and apply metadata (runs in a download worker).
 
     Args:
@@ -66,6 +67,7 @@ def download_and_prepare(work_item, session):
             (image_data, output_dir, quality, convert_webp, access_token,
              webp_quality, webp_method)
         session: requests.Session reused by this worker
+        on_download: Optional callback(bytes_received, elapsed_seconds)
 
     Returns:
         Tuple of (kind, payload):
@@ -89,8 +91,11 @@ def download_and_prepare(work_item, session):
         session.headers.update({"Authorization": f"OAuth {access_token}"})
 
         try:
+            started = time.monotonic()
             response = http_get_with_retry(session, image_url, max_retries=3, base_delay=1.0, timeout=60)
             jpeg_bytes = response.content
+            if on_download:
+                on_download(len(jpeg_bytes), time.monotonic() - started)
         except Exception as e:
             return "result", (image_id, 0, 0, sequence_id, False, f"Download failed: {e}")
 

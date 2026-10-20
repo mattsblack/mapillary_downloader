@@ -37,7 +37,7 @@ _QUEUE_POLL_TIMEOUT = 0.5
 class AdaptiveWorkerPool:
     """Two-stage threaded pool that ramps download workers based on throughput."""
 
-    def __init__(self, max_workers=16, convert_workers=None, monitoring_interval=10):
+    def __init__(self, max_workers=16, convert_workers=None, monitoring_interval=10, adaptive=True):
         """Initialize the pool.
 
         Args:
@@ -45,10 +45,14 @@ class AdaptiveWorkerPool:
             convert_workers: Number of convert (CPU) worker threads
                 (default: CPU count)
             monitoring_interval: Seconds between throughput checks
+            adaptive: Ramp concurrency when True; otherwise start max_workers
         """
         self.max_workers = max_workers
         self.convert_workers = convert_workers or (os.cpu_count() or 4)
         self.monitoring_interval = monitoring_interval
+        self.adaptive = adaptive
+        if max_workers < 1 or self.convert_workers < 1 or monitoring_interval <= 0:
+            raise ValueError("Worker counts and monitoring interval must be positive")
 
         # Bounded download/convert queues provide backpressure; the result queue
         # is unbounded so convert workers never block, which avoids deadlock when
@@ -61,13 +65,20 @@ class AdaptiveWorkerPool:
         self.convert_threads = []
 
         # Start download workers at 50% of max (ramp the rest in adaptively).
-        self.current_workers = max(1, int(max_workers * 0.5))
+        self.current_workers = max(1, int(max_workers * 0.5)) if adaptive else max_workers
 
         # Throughput monitoring
         self.throughput_history = deque(maxlen=5)
         self.worker_count_history = deque(maxlen=5)
-        self.last_processed = 0
-        self.last_check_time = time.time()
+        self.last_check_time = time.monotonic()
+        self._stats_lock = threading.Lock()
+        self._control_lock = threading.Lock()
+        self._download_bytes = 0
+        self._download_count = 0
+        self._download_seconds = 0.0
+        self._convert_wait_seconds = 0.0
+        self._monitor_thread = None
+        self._finishing = False
 
         self._stop = threading.Event()
         self._worker_seq = 0
@@ -81,6 +92,18 @@ class AdaptiveWorkerPool:
             self._add_worker()
         for i in range(self.convert_workers):
             self._add_convert_worker(i)
+        self._monitor_thread = threading.Thread(target=self._monitor_loop, name="download-monitor", daemon=True)
+        self._monitor_thread.start()
+
+    def _monitor_loop(self):
+        while not self._stop.wait(self.monitoring_interval):
+            self.check_throughput()
+
+    def _record_download(self, byte_count, elapsed):
+        with self._stats_lock:
+            self._download_bytes += byte_count
+            self._download_count += 1
+            self._download_seconds += elapsed
 
     def _add_worker(self):
         """Add a download worker thread."""
@@ -109,7 +132,7 @@ class AdaptiveWorkerPool:
                 if item is None:
                     break
                 try:
-                    kind, payload = download_and_prepare(item, session)
+                    kind, payload = download_and_prepare(item, session, self._record_download)
                 except Exception as e:
                     image_id = item[0].get("id") if item and item[0] else None
                     self.result_queue.put((image_id, 0, 0, None, False, str(e)))
@@ -124,9 +147,12 @@ class AdaptiveWorkerPool:
 
     def _enqueue_convert(self, task):
         """Hand a task to the convert stage, honoring the stop signal."""
+        started = time.monotonic()
         while not self._stop.is_set():
             try:
                 self.convert_queue.put(task, timeout=_QUEUE_POLL_TIMEOUT)
+                with self._stats_lock:
+                    self._convert_wait_seconds += time.monotonic() - started
                 return
             except queue.Full:
                 continue
@@ -149,6 +175,9 @@ class AdaptiveWorkerPool:
     def submit(self, work_item):
         """Submit work to the download stage (blocks if the queue is full)."""
         if work_item is None:
+            # Do not spawn new workers after the orchestrator counts sentinels.
+            with self._control_lock:
+                self._finishing = True
             self.work_queue.put(None)
             return
         while not self._stop.is_set():
@@ -157,6 +186,12 @@ class AdaptiveWorkerPool:
                 return
             except queue.Full:
                 continue
+
+    def finish_submissions(self):
+        """Freeze worker count before the caller sends shutdown sentinels."""
+        with self._control_lock:
+            self._finishing = True
+            return self.current_workers
 
     def get_result(self, timeout=None):
         """Get a result, or None if none available within the timeout."""
@@ -176,30 +211,64 @@ class AdaptiveWorkerPool:
             added += 1
         return added
 
-    def check_throughput(self, total_processed):
-        """Check download throughput and ramp up workers if it's still helping.
+    def check_throughput(self, total_processed=None):
+        """Sample network metrics independently of completed conversions.
 
-        Args:
-            total_processed: Total number of items processed so far
+        The optional argument is retained for callers using the old interface.
         """
-        now = time.time()
+        with self._control_lock:
+            self._check_throughput()
+
+    def _check_throughput(self):
+        now = time.monotonic()
         elapsed = now - self.last_check_time
 
         if elapsed < self.monitoring_interval:
             logger.debug(f"Throughput check skipped (elapsed {elapsed:.1f}s < {self.monitoring_interval}s)")
             return
 
-        items_since_check = total_processed - self.last_processed
-        throughput = items_since_check / elapsed
+        with self._stats_lock:
+            byte_count = self._download_bytes
+            count = self._download_count
+            seconds = self._download_seconds
+            convert_wait = self._convert_wait_seconds
+            self._download_bytes = self._download_count = 0
+            self._download_seconds = self._convert_wait_seconds = 0.0
+        throughput = byte_count / elapsed
 
         current_workers = len(self.download_threads)
-        self.throughput_history.append(throughput)
-        self.worker_count_history.append(current_workers)
-        self.last_processed = total_processed
         self.last_check_time = now
 
-        logger.info(f"Throughput: {throughput:.1f} items/s (download workers: {current_workers}/{self.max_workers})")
+        logger.info(
+            "Network: %.2f MB/s, %.1f images/s, mean download %.3fs; "
+            "queues download=%d/%d convert=%d/%d; conversion wait=%.2f worker-seconds; workers=%d/%d",
+            throughput / 1_000_000,
+            count / elapsed,
+            seconds / count if count else 0,
+            self.work_queue.qsize(),
+            self.work_queue.maxsize,
+            self.convert_queue.qsize(),
+            self.convert_queue.maxsize,
+            convert_wait,
+            current_workers,
+            self.max_workers,
+        )
 
+        # Additional downloaders cannot help an empty feeder or blocked encoders.
+        if (
+            not self.adaptive
+            or self._finishing
+            or self._stop.is_set()
+            or self.work_queue.empty()
+            or self.convert_queue.full()
+            or convert_wait > elapsed * current_workers * 0.1
+        ):
+            self.throughput_history.clear()
+            self.worker_count_history.clear()
+            return
+
+        self.throughput_history.append(throughput)
+        self.worker_count_history.append(current_workers)
         if current_workers >= self.max_workers:
             return
 
@@ -226,17 +295,18 @@ class AdaptiveWorkerPool:
         # If throughput dropped meaningfully, stop adding workers.
         if current_throughput < previous_throughput * 0.95:
             logger.info(
-                f"Throughput decreasing ({current_throughput:.1f} vs {previous_throughput:.1f} items/s), "
+                f"Network throughput decreasing ({current_throughput:.1f} vs {previous_throughput:.1f} bytes/s), "
                 f"holding at {current_workers} workers"
             )
             return
 
         if workers_added > 0 and throughput_gain > 0:
             gain_per_worker = throughput_gain / workers_added
-            logger.debug(f"Gain per worker: {gain_per_worker:.2f} items/s")
-            if gain_per_worker > 0.5:
+            logger.debug(f"Gain per worker: {gain_per_worker:.2f} bytes/s")
+            relative_gain = throughput_gain / previous_throughput if previous_throughput else 1
+            if relative_gain > 0.1:
                 workers_to_add = max(1, int(current_workers * 0.3))
-            elif gain_per_worker > 0.2:
+            elif relative_gain > 0.03:
                 workers_to_add = max(1, int(current_workers * 0.2))
             else:
                 workers_to_add = max(1, int(current_workers * 0.1))
@@ -253,6 +323,8 @@ class AdaptiveWorkerPool:
         self.running = False
         self._stop.set()
 
+        if self._monitor_thread is not None:
+            self._monitor_thread.join(timeout=timeout)
         for t in self.download_threads:
             t.join(timeout=timeout)
         for t in self.convert_threads:

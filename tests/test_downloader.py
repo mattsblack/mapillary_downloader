@@ -23,7 +23,7 @@ class FakeWorkerPool:
 
     instances = []
 
-    def __init__(self, max_workers=16, convert_workers=None, monitoring_interval=10):
+    def __init__(self, max_workers=16, convert_workers=None, monitoring_interval=10, adaptive=True):
         self.max_workers = max_workers
         self.convert_workers = convert_workers
         self.monitoring_interval = monitoring_interval
@@ -56,12 +56,15 @@ class FakeWorkerPool:
     def shutdown(self, timeout=2):
         self.shutdown_called = True
 
+    def finish_submissions(self):
+        return self.current_workers
+
 
 class InterruptAfterResultWorkerPool(FakeWorkerPool):
     """Worker pool that interrupts after one successful result is observed."""
 
-    def __init__(self, max_workers=16, convert_workers=None, monitoring_interval=10):
-        super().__init__(max_workers, convert_workers, monitoring_interval)
+    def __init__(self, max_workers=16, convert_workers=None, monitoring_interval=10, adaptive=True):
+        super().__init__(max_workers, convert_workers, monitoring_interval, adaptive)
         self.returned_result = False
 
     def get_result(self, timeout=None):

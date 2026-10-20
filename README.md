@@ -37,6 +37,7 @@ mapillary-downloader --output ./downloads USERNAME1
 | `--bbox`        | `west,south,east,north`                      | `None`             |
 | `--no-webp`     | Don't convert to WebP                        | `False`            |
 | `--max-workers` | Maximum number of parallel download workers  | `64`               |
+| `--fixed-workers` | Start all download workers and disable adaptive scaling | `False` |
 | `--convert-workers` | Number of CPU-bound WebP convert workers | CPU count          |
 | `--webp-quality` | WebP quality 0-100 (higher = larger/better) | `80`              |
 | `--webp-method` | WebP encode method 0 (fast) - 6 (slow/best), or `auto` | `auto`   |
@@ -75,6 +76,12 @@ results on representative images before choosing a slower method.
 
 Tune the trade-offs with `--convert-workers` (defaults to your CPU count),
 `--webp-quality`, and `--webp-method`.
+
+Download concurrency is sampled every 10 seconds using network bytes per second,
+download latency, and queue pressure, independently of WebP completions. Scaling
+pauses when the metadata feeder is empty or conversion is backed up. Use
+`--fixed-workers --max-workers 64` for a fixed concurrency comparison. Network
+metrics and queue occupancy are included in the log.
 
 To disable WebP conversion and keep original JPEGs, use `--no-webp`:
 

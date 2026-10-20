@@ -54,6 +54,11 @@ def main():
         help="Maximum number of parallel download (I/O) workers (default: 64)",
     )
     parser.add_argument(
+        "--fixed-workers",
+        action="store_true",
+        help="Start all --max-workers download threads immediately and disable adaptive scaling",
+    )
+    parser.add_argument(
         "--convert-workers",
         type=int,
         default=os.cpu_count() or 4,
@@ -204,6 +209,7 @@ def main():
                     username,
                     args.quality,
                     max_workers=args.max_workers,
+                    adaptive_workers=not args.fixed_workers,
                     tar_sequences=not args.no_tar,
                     convert_webp=convert_webp,
                     check_ia=not args.no_check_ia,
