@@ -4,8 +4,6 @@ import io
 
 from PIL import Image
 
-from unittest.mock import patch
-
 from mapillary_downloader.webp_converter import (
     check_webp_available,
     convert_to_webp,
@@ -34,14 +32,10 @@ def test_resolve_webp_method_explicit():
     assert resolve_webp_method(-2) == 0
 
 
-def test_resolve_webp_method_auto_scales_with_cpu():
-    """'auto' picks a faster method on low-core machines."""
-    with patch("mapillary_downloader.webp_converter.os.cpu_count", return_value=2):
-        assert resolve_webp_method("auto") == 0
-    with patch("mapillary_downloader.webp_converter.os.cpu_count", return_value=4):
-        assert resolve_webp_method(None) == 2
-    with patch("mapillary_downloader.webp_converter.os.cpu_count", return_value=16):
-        assert resolve_webp_method("auto") == 4
+def test_resolve_webp_method_auto_favors_throughput():
+    """Auto uses the fast encoder regardless of CPU count."""
+    assert resolve_webp_method("auto") == 0
+    assert resolve_webp_method(None) == 0
 
 
 def test_encode_webp_success(tmp_path):

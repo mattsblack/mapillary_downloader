@@ -69,9 +69,8 @@ def main():
         "--webp-method",
         default="auto",
         help=(
-            "WebP encode method 0 (fast) - 6 (slow/best), or 'auto' to pick "
-            "based on CPU count (default: auto). Lower is faster but larger; "
-            "this is the main throughput lever on low-core machines."
+            "WebP encode method 0 (fast) - 6 (slow/best), or 'auto' for method 0 "
+            "(default: auto). Higher methods trade encoding time for compression efficiency."
         ),
     )
     parser.add_argument(

@@ -2,7 +2,6 @@
 
 import io
 import logging
-import os
 from pathlib import Path
 
 from PIL import Image, features
@@ -11,20 +10,19 @@ logger = logging.getLogger("mapillary_downloader")
 
 # Quality/speed trade-offs for the libwebp encoder used by Pillow.
 # quality: 0-100 (higher is better/larger). method: 0 (fast) - 6 (slow/best).
-# The encode method is the dominant CPU cost: method 0 is roughly 2x faster than
-# method 4 for a small increase in file size, while visual quality is governed by
-# `quality` (not `method`). On CPU-bound machines the WebP encode is the
-# throughput bottleneck, so the default method is chosen based on CPU count.
+# Favor throughput by default. Explicit methods 1-6 remain available when
+# encoding time can be traded for compression efficiency. Compare real images:
+# both size and visual results can vary with the method at a given quality.
 DEFAULT_WEBP_QUALITY = 80
-DEFAULT_WEBP_METHOD = 4
+DEFAULT_WEBP_METHOD = 0
 
 
 def resolve_webp_method(value=None):
-    """Resolve a WebP encode method, picking a CPU-appropriate default.
+    """Resolve a WebP encode method, favoring throughput for auto.
 
     Args:
         value: An explicit method (int or numeric string), or None/"auto" to
-            choose automatically based on the available CPU count.
+            use the throughput-oriented default.
 
     Returns:
         An int method in the range 0-6.
@@ -32,12 +30,6 @@ def resolve_webp_method(value=None):
     if value is not None and str(value).lower() != "auto":
         return max(0, min(6, int(value)))
 
-    cpus = os.cpu_count() or 4
-    # Fewer cores -> conversion is the wall, so favour a faster encode.
-    if cpus <= 2:
-        return 0
-    if cpus <= 4:
-        return 2
     return DEFAULT_WEBP_METHOD
 
 
